@@ -123,7 +123,7 @@ def main():
 
     md, body, title, tags, cfg = load_note(note_dir)
     schedule_time = resolve_schedule(args.schedule, cfg)
-    style = args.style or cfg.get("style", "minimal")
+    style = args.style or cfg.get("style", "card")
     out_dir = note_dir / cfg.get("out", "out")
 
     cmd = [

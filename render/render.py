@@ -63,6 +63,17 @@ STYLES = {
         "title_font": "'PingFang SC','Hiragino Sans GB','STHeiti',sans-serif",
         "fs": 40, "lh": 1.95, "title_weight": 700, "quote_bg": "#1F1E1C",
     },
+    # 深色卡片风：墨蓝/墨绿/绛红/玄黑按页轮换，米白衬线字，整页即一张卡片
+    "card": {
+        "bg": "#2B3D6E",  # 封面默认墨蓝；正文页按 bg_cycle 轮换
+        "fg": "#F0ECDF", "muted": "rgba(240,236,223,0.62)",
+        "line": "rgba(240,236,223,0.26)",
+        "accent": "#F0ECDF", "hl": "rgba(240,236,223,0.22)",
+        "font": "'Songti SC','Noto Serif SC','STSong',serif",
+        "title_font": "'Songti SC','Noto Serif SC','STSong',serif",
+        "fs": 40, "lh": 2.0, "title_weight": 700, "quote_bg": "rgba(255,255,255,0.07)",
+        "bg_cycle": ["#2B3D6E", "#2E4A3D", "#682A34", "#1E1D1B"],  # 蓝/绿/红/黑
+    },
 }
 
 CSS_TMPL = Template("""
@@ -258,18 +269,27 @@ def paginate(page, units, css):
 
 # ---------------------------------------------------------------- 组页
 
-def css_for(style_key, fs_override=None):
+def css_for(style_key, fs_override=None, bg_override=None):
     st = STYLES[style_key]
     fs = fs_override or st["fs"]
     return CSS_TMPL.substitute(
         W=W, H=H, PAD_TOP=PAD_TOP, PAD_X=PAD_X, PAD_BOTTOM=PAD_BOTTOM,
         CONTENT_W=CONTENT_W, TOPLINE_H=TOPLINE_H,
-        bg=st["bg"], fg=st["fg"], muted=st["muted"], line=st["line"],
+        bg=bg_override or st["bg"], fg=st["fg"], muted=st["muted"], line=st["line"],
         accent=st["accent"], hl=st["hl"], font=st["font"], title_font=st["title_font"],
         quote_bg=st["quote_bg"],
         fs=fs, fs_q=fs - 2, lh=st["lh"], tw=st["title_weight"],
         title_fs=title_size("")[0],
     )
+
+
+def page_css(style_key, page_no, fs_override=None):
+    """card 风格按页轮换背景色：封面/正文/结尾都进轮换序列。其余风格单色。"""
+    st = STYLES[style_key]
+    cycle = st.get("bg_cycle")
+    if not cycle:
+        return css_for(style_key, fs_override)
+    return css_for(style_key, fs_override, bg_override=cycle[(page_no - 1) % len(cycle)])
 
 
 def title_size(title):
@@ -333,7 +353,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True, help="长文 markdown")
     ap.add_argument("--out", required=True, help="输出目录")
-    ap.add_argument("--style", default="minimal", choices=list(STYLES))
+    ap.add_argument("--style", default="card", choices=list(STYLES))
     ap.add_argument("--kicker", default="", help="封面左上小标签 / 结尾页小标签")
     ap.add_argument("--author", default="署名")
     ap.add_argument("--closing", default="", help="结尾页大字，留空则不生成结尾页")
@@ -366,11 +386,14 @@ def main():
         total = 1 + len(pages) + (1 if has_end else 0)
 
         shot = browser.new_page(viewport={"width": W, "height": H}, device_scale_factor=DSF)
-        jobs = [(1, cover_html(STYLES[args.style], title, lead, args.kicker, args.author, css))]
+        jobs = [(1, cover_html(STYLES[args.style], title, lead, args.kicker, args.author,
+                               page_css(args.style, 1, args.fs)))]
         for i, pgs in enumerate(pages, start=2):
-            jobs.append((i, body_html(pgs, i, total, css, args.author)))
+            jobs.append((i, body_html(pgs, i, total, page_css(args.style, i, args.fs), args.author)))
         if has_end:
-            jobs.append((total, end_html(args.closing, total, total, css, args.author, args.kicker)))
+            jobs.append((total, end_html(args.closing, total, total,
+                                         page_css(args.style, total, args.fs),
+                                         args.author, args.kicker)))
 
         files = []
         for idx, html in jobs:
