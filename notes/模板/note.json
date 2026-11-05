@@ -1,0 +1,9 @@
+{
+  "style": "magazine",
+  "kicker": "AI 与内容 · 001",
+  "author": "署名",
+  "closing": "结尾页大字\n可以换行",
+  "title": "小红书标题，20 字以内",
+  "body": "小红书正文。\n\n可以直接写在这里，也可以用 \"body_file\": \"body.txt\" 引用同目录的文本文件。",
+  "tags": ["长期主义", "复利思维"]
+}

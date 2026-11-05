@@ -1,0 +1,10 @@
+# 登录态与运行痕迹（绝不入仓）
+publish/.profile/
+publish/logs/
+# 生成的图片（随时可重新渲染）
+notes/*/out/
+# Python
+__pycache__/
+*.pyc
+# 系统
+.DS_Store
