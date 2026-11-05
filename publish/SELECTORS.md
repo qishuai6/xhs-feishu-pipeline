@@ -353,7 +353,7 @@ python3 login.py            # 已登录时会自动 dump
 python3 publish.py --dump   # 或只 dump，不填内容
 
 # 真实链路空跑（最推荐，只填不点提交）
-python3 publish.py --meta "../notes/002-50岁还在跳槽/out" --body body.txt --dry-run --headed
+python3 publish.py --meta "../notes/示例笔记/out" --body body.txt --dry-run --headed
 ```
 
 看 `logs/explore-*.json` / `logs/publish-dom.txt` / `logs/run-report-*.json`，
