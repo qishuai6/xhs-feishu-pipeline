@@ -63,9 +63,9 @@ STYLES = {
         "title_font": "'PingFang SC','Hiragino Sans GB','STHeiti',sans-serif",
         "fs": 40, "lh": 1.95, "title_weight": 700, "quote_bg": "#1F1E1C",
     },
-    # 深色卡片风：墨蓝/墨绿/绛红/玄黑按页轮换，米白衬线字，整页即一张卡片
+    # 深色卡片风：整篇统一一个深色底，颜色在笔记之间轮换（001 蓝→002 绿→003 红→004 黑）
     "card": {
-        "bg": "#2B3D6E",  # 封面默认墨蓝；正文页按 bg_cycle 轮换
+        "bg": "#2B3D6E",
         "fg": "#F0ECDF", "muted": "rgba(240,236,223,0.62)",
         "line": "rgba(240,236,223,0.26)",
         "accent": "#F0ECDF", "hl": "rgba(240,236,223,0.22)",
@@ -283,13 +283,25 @@ def css_for(style_key, fs_override=None, bg_override=None):
     )
 
 
-def page_css(style_key, page_no, fs_override=None):
-    """card 风格按页轮换背景色：封面/正文/结尾都进轮换序列。其余风格单色。"""
+def note_color_index(input_path, cycle_len):
+    """由笔记目录名稳定决定本篇用第几个颜色：
+    数字前缀优先（001→0、002→1、003→2……），无前缀则用目录名的稳定哈希。
+    同一篇永远同一色，重渲染不变。"""
+    import hashlib
+    d = Path(input_path).resolve().parent.name
+    m = re.match(r"^(\d+)", d)
+    if m:
+        return (int(m.group(1)) - 1) % max(cycle_len, 1)
+    return int(hashlib.md5(d.encode("utf-8")).hexdigest(), 16) % max(cycle_len, 1)
+
+
+def note_css(style_key, color_idx, fs_override=None):
+    """card 风格整篇统一一个背景色（由笔记目录名轮换决定）。其余风格单色。"""
     st = STYLES[style_key]
     cycle = st.get("bg_cycle")
     if not cycle:
         return css_for(style_key, fs_override)
-    return css_for(style_key, fs_override, bg_override=cycle[(page_no - 1) % len(cycle)])
+    return css_for(style_key, fs_override, bg_override=cycle[color_idx % len(cycle)])
 
 
 def title_size(title):
@@ -386,13 +398,15 @@ def main():
         total = 1 + len(pages) + (1 if has_end else 0)
 
         shot = browser.new_page(viewport={"width": W, "height": H}, device_scale_factor=DSF)
-        jobs = [(1, cover_html(STYLES[args.style], title, lead, args.kicker, args.author,
-                               page_css(args.style, 1, args.fs)))]
+        cycle = STYLES[args.style].get("bg_cycle") or [STYLES[args.style]["bg"]]
+        color_idx = note_color_index(args.input, len(cycle))
+        chosen_bg = cycle[color_idx % len(cycle)]
+        css_note = note_css(args.style, color_idx, args.fs)
+        jobs = [(1, cover_html(STYLES[args.style], title, lead, args.kicker, args.author, css_note))]
         for i, pgs in enumerate(pages, start=2):
-            jobs.append((i, body_html(pgs, i, total, page_css(args.style, i, args.fs), args.author)))
+            jobs.append((i, body_html(pgs, i, total, css_note, args.author)))
         if has_end:
-            jobs.append((total, end_html(args.closing, total, total,
-                                         page_css(args.style, total, args.fs),
+            jobs.append((total, end_html(args.closing, total, total, css_note,
                                          args.author, args.kicker)))
 
         files = []
@@ -414,7 +428,7 @@ def main():
     tmp.rmdir()
 
     meta = {
-        "style": args.style, "title": title, "lead": lead,
+        "style": args.style, "title": title, "lead": lead, "bg": chosen_bg,
         "pages": len(files), "images": files, "out_dir": str(out),
     }
     (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
