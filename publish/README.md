@@ -5,9 +5,9 @@
 ```bash
 cd /Users/qishuai/Documents/deepseek-harness/default-workspace/xhs-auto/publish
 python3 publish.py \
-  --meta "../notes/002-50岁还在跳槽/out" \
+  --meta "../notes/示例笔记/out" \
   --body body.txt \
-  --title "她50岁还在跳槽，我反而被打醒了" \
+  --title "这是一个示例笔记标题" \
   --tags "AI提效,人工智能,职场,内容创作,个人IP,复利思维,长期主义" \
   --schedule "2026-11-05 19:31"
 ```
@@ -33,7 +33,7 @@ python3 publish.py \
 已用真实笔记（7 张图 / 16 字标题 / 610 字正文 / 7 个话题）完整走通「填内容 → 存草稿」和「填内容 → 定时发布（到点前的最后一步）」：
 
 - ✅ 切「上传图文」tab、7 张图按顺序上传（`7/18` 计数正确）
-- ✅ 标题填进去（`她50岁还在跳槽，我反而被打醒了`）
+- ✅ 标题填进去（`这是一个示例笔记标题`）
 - ✅ 正文 610 字分段正确写入（Tiptap 编辑器）
 - ✅ 7 个话题全部变成真正的话题节点（不是纯文本）
 - ✅ 空跑模式停在最后一步，**没有点任何提交类按钮**（0 次 allow_submit）
@@ -112,9 +112,9 @@ python3 login.py --check
 cd /Users/qishuai/Documents/deepseek-harness/default-workspace/xhs-auto/publish
 
 python3 publish.py \
-  --meta "../notes/002-50岁还在跳槽/out" \
+  --meta "../notes/示例笔记/out" \
   --body body.txt \
-  --title "她50岁还在跳槽，我反而被打醒了" \
+  --title "这是一个示例笔记标题" \
   --tags "AI提效,人工智能,职场,内容创作,个人IP,复利思维,长期主义" \
   --schedule "2026-11-05 19:31"
 ```

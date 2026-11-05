@@ -11,7 +11,7 @@
   python3 make.py --dir notes/003-选题名 --schedule --headed   # 同上，能看到浏览器操作
 
 目录约定：
-  notes/001-消费转资产/
+  notes/示例笔记/
     long.md      长文本正文
     note.json    小红书那边的标题 / 正文 / 话题 / 风格
 
