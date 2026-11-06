@@ -27,7 +27,7 @@ long.md 写法：
 note.json 字段：
   style      minimal / magazine / dark   （默认 minimal）
   kicker     封面左上角小标签，也是结尾页标签
-  author     署名，默认「七帅」
+  author     署名，note.json 里改
   closing    结尾页大字，可含换行；留空则不生成结尾页
   title      【小红书标题】≤20 字
   body       【小红书正文】可直接写，也可以用 "body_file": "body.txt"

@@ -7,7 +7,7 @@
 
 用法（一般由 make.py --platform wechat 调用）：
     python3 wechat_publish.py --images ../notes/xxx/out --title 标题 \
-        --digest 摘要 --author 七帅 [--schedule "2026-11-06 19:00" | --draft | --dry-run]
+        --digest 摘要 --author 署名 [--schedule "2026-11-06 19:00" | --draft | --dry-run]
 """
 
 import argparse
@@ -76,7 +76,7 @@ def main():
     ap.add_argument("--images", required=True, help="图片目录 / 逗号分隔 / 通配符")
     ap.add_argument("--title", required=True, help="标题（≤64 字）")
     ap.add_argument("--digest", default="", help="摘要（≤120 字，转发卡片展示；不填抓正文开头）")
-    ap.add_argument("--author", default="七帅", help="作者名（≤8 字）")
+    ap.add_argument("--author", default="署名", help="作者名（≤8 字）")
     ap.add_argument("--schedule", default=None, help="定时发表 \"YYYY-MM-DD HH:MM\"（5分钟后~7天内）")
     ap.add_argument("--draft", action="store_true", help="只保存草稿（默认）")
     ap.add_argument("--dry-run", action="store_true", help="填好+保存草稿，不点任何发表按钮")
