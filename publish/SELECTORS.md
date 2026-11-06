@@ -353,8 +353,28 @@ python3 login.py            # 已登录时会自动 dump
 python3 publish.py --dump   # 或只 dump，不填内容
 
 # 真实链路空跑（最推荐，只填不点提交）
-python3 publish.py --meta "../notes/示例笔记/out" --body body.txt --dry-run --headed
+python3 publish.py --meta "../notes/002-50岁还在跳槽/out" --body body.txt --dry-run --headed
 ```
 
 看 `logs/explore-*.json` / `logs/publish-dom.txt` / `logs/run-report-*.json`，
 按「元素清单」更新本文档和 `publish.py` 的对应函数（`pick_tab` / `find_image_input` / `fill_title` / `fill_body` / `add_tags` / `get_publish_buttons`）。
+
+---
+
+## ego lite 实测补充（2026-11-06，发布链路切换到 ego-browser）
+
+- **`page.evaluate` 必须传函数**：传字符串会静默返回 `{}`，所有探测逻辑用真函数注入。
+- **选择器要求唯一匹配**：ego 不允许 `.first()` 式歧义。页面有多个同类 input 时，
+  用「JS 标记法」：evaluate 里按候选顺序找第一个可见元素打 `data-xhs-*` 标记，
+  再用标记选择器操作（见 ego_publish.mjs 的 findTitleInput / findImageInput）。
+- **closed shadow DOM 拿不到**：ego 的 CDP 反检测层会把 shadow DOM（连同 xhs-* 自定义
+  元素 host）从 `DOM.getDocument(pierce:true)` 里整个滤掉，Playwright 的穿透法失效。
+  **可行替代**：`Accessibility.getFullAXTree` 天然穿透 closed shadow root → 按角色
+  button + 名称（暂存离开/发布/定时发布）拿 `backendDOMNodeId` →
+  `DOM.getBoxModel({backendNodeId})` → 真实鼠标坐标点击。
+- **定位权限弹窗**：小红书页面加载即请求 geolocation，会触发 ego 浏览器级权限提示并
+  中断自动化。解法：`Page.addScriptToEvaluateOnNewDocument` 注入脚本接管
+  `navigator.geolocation`（直接回调 PERMISSION_DENIED），弹窗不再出现。
+- **登录态**：跟 ego lite 浏览器配置走（人机共用）。`ego_login.py --check` 判据：
+  未被重定向到 /login 且页面含「上传图文|笔记管理|数据看板」特征文字。
+  不要用「短信登录」字样做未登录判据（已登录页面也会残留，实测误报）。

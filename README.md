@@ -1,104 +1,128 @@
-# xhs-feishu-pipeline
+# 长文 → 小红书图文 → 定时发布
 
-**飞书发稿 → 发布前风险检测 → 自动改稿 → 小红书定时发布**，一条全自动流水线。
+一条命令：长文拆成小红书图文（3:4 多页 PNG），填好标题 / 正文 / 话题，设成**当天 19:31 定时发布**。
 
-在飞书聊天里把稿子发给你的机器人，剩下的不用管：逐句风险检测（平台机器审核层 + 内容实质层）、按检测结果做最小修改、长文自动拆成 3:4 多页图文、填好标题/正文/话题、定时当天 19:31 发布，并把检测摘要、改动清单和发布凭证回发到飞书。
+小红书到点自己发，不用你守着。
 
+---
+
+## 一条命令
+
+```bash
+cd ~/Documents/deepseek-harness/default-workspace/xhs-auto
+
+# 新建一篇
+python3 make.py --new 003-选题名
+
+# 改两个文件
+#   notes/003-选题名/long.md     粘长文
+#   notes/003-选题名/note.json   填标题 / 正文 / 话题 / 风格
+
+# 出图 + 定时发布（当天 19:31）
+python3 make.py --dir notes/003-选题名 --schedule --headed
 ```
-飞书私聊（你发稿子）
-   ↓
-ZCode 机器人（Bot Channel，长连接）
-   ↓
-dbs-content-risk-check 风险检测（机器审核触发点 + 内容实质问题双层）
-   ↓
-最小修改（保留观点、口语风格与传播钩子）
-   ↓
-xhs-auto：长文 → 3:4 多页 PNG → 填表 → 定时 19:31
-   ↓
-飞书收回执：检测结果 + 改动清单 + 「审核中」回读凭证
-```
 
-## 组成
+`--headed` 能看见浏览器操作，第一次用建议带上；熟了可以去掉。
 
-| 目录 | 作用 |
+### 定时规则
+
+- 默认 **当天 19:31**，到点小红书自动发
+- 如果当天 19:31 已经过了，自动顺延到**次日 19:31**
+- 想指定别的时刻：`--schedule "2026-11-05 20:00"`
+- 时间格式错误、或给的时间已经过去，脚本直接报错退出，不会自己猜
+
+### 发完去哪儿看 / 怎么改
+
+**笔记管理 → 审核中** 会有一条「定时发布 2026-11-05 19:31」。
+
+在 19:31 之前，你都可以在那里取消、改时间或改内容。发出去之后就正常出现在 App 里了。
+
+### 其他模式
+
+| 命令 | 作用 |
 |---|---|
-| `make.py` | 总入口：渲染 → 打包 → 登录检查 → 定时发布 |
-| `render/render.py` | 长文 Markdown → 小红书 3:4 多页 PNG（HTML/CSS 排版 + Chrome 截图，minimal/magazine/dark 三风格） |
-| `publish/` | 浏览器自动化：扫码登录、填表、定时发布、DOM dump 工具 |
-| `notes/` | 笔记目录（`模板/` + `示例笔记/`），每篇 = `long.md`（长文，进图片）+ `note.json`（标题/正文/话题，进表单） |
-| `docs/FEISHU-SETUP.md` | 飞书开放平台 + ZCode 绑定的完整配置指南（含全部踩坑点） |
-| `PIPELINE.agents.md` | 流水线常驻指令模板，复制进你的 `AGENTS.md` 即可 |
+| `--schedule` | 定时发布（标准用法） |
+| `--draft` | 只存草稿，不发布 |
+| `--publish` | 立即发布（不推荐，没有反悔窗口） |
+| `--dry-run` | 全部填好、定时也设好，停在最后一步不点发布 |
+| `--style minimal\|magazine\|dark` | 临时换风格 |
 
-## 快速开始
+---
 
-### 0. 依赖
+## 登录（只做一次）
 
-- Google Chrome（脚本调系统 Chrome，**不要**跑 `playwright install`）
-- Python 3.9+，两个包：`pip3 install playwright pillow`
-- [ZCode](https://zcode.app) 桌面版（流水线的机器人运行时）
+发布走 **ego lite 浏览器**（默认，`--browser chrome` 可切回旧 Chrome 方式）：
+登录态存在 ego lite 里，人和脚本共用一个浏览器。
 
-### 1. 小红书登录（每台电脑一次）
+前置：装好 [ego lite](https://ego.fit) 和 `ego-browser` CLI，然后：
 
 ```bash
 cd publish
-python3 login.py --qr --headed    # 弹出 Chrome，小红书 App 扫码
-python3 login.py --check          # 应显示 ✅ 已登录
+python3 ego_login.py --qr      # 在 ego lite 里打开小红书登录页，你扫码
+python3 ego_login.py --check   # 确认登录态还在
 ```
 
-### 2. 单机模式（不接飞书也能用）
+登录失效了脚本会直接提示，不会瞎点。定位权限已被脚本屏蔽（注入拒绝回调），不会弹窗。
 
-```bash
-python3 make.py --new 001-选题名        # 从模板新建笔记目录
-# 编辑 notes/001-选题名/long.md（长文）和 note.json（标题/正文/话题）
-python3 make.py --dir notes/001-选题名 --dry-run --headed   # 试填，停在最后一步，0 次发布点击
-python3 make.py --dir notes/001-选题名 --schedule --headed  # 定时当天 19:31
+---
+
+## long.md 怎么写
+
+| 写法 | 效果 |
+|---|---|
+| `# 第一行` | 封面主标题（字号最大） |
+| `# 第二行` | 封面副标题（降级、灰色） |
+| `> 一句话` | 封面下方灰字导语 |
+| `## 小标题` | 正文里带红色竖线的段标题 |
+| `==高亮==` | 黄色荧光笔 |
+| `**加粗**` | 加粗 |
+| `- 列表` | 破折号列表 |
+| 普通段落 | 自动分页 |
+
+分页按真实渲染高度逐句塞，塞不下翻页；小标题不会孤零零掉在页底；页尾尽量停在完整句子上。
+
+## note.json 怎么写
+
+```json
+{
+  "style": "minimal",
+  "kicker": "AI 与内容 · 001",
+  "author": "署名",
+  "closing": "结尾页大字\n可以换行",
+  "title": "小红书标题，20 字以内",
+  "body": "小红书正文，带 emoji 和分段",
+  "tags": ["长期主义", "复利思维"]
+}
 ```
 
-### 3. 接入飞书流水线
+- `style`：`minimal` 白底黑字（最清楚）／`magazine` 米色宋体（刊物质感）／`dark` 黑底白字（冲击力强）
+- `closing` 留空就不生成结尾页
+- `body` 也可以写 `"body_file": "body.txt"` 引用同目录文本文件
+- `tags` 不带 `#` 号
 
-按 [docs/FEISHU-SETUP.md](docs/FEISHU-SETUP.md) 配置（约 10 分钟），核心三步：
+---
 
-1. 飞书开放平台创建应用并**发布**（可用范围选**全体成员**——见踩坑清单）
-2. ZCode 设置 → 移动端远程控制 → Bot Channels → 新建飞书机器人（扫码自动创建应用）→ 飞书里发 `/bind` 绑定工作区
-3. 把 [PIPELINE.agents.md](PIPELINE.agents.md) 内容复制进你工作区的 `AGENTS.md`
+## 实测状态
 
-之后在飞书私聊发稿子即可，例如：
+2026-11-05 全链路真实跑通：登录 → 切「上传图文」tab → 7 张图上传 → 标题 16 字 → 正文 610 字 → 7 个话题 → 定时发布 19:31 → 笔记管理出现定时记录。
 
-> 帮我检测一下这篇能不能发，改好以后定到今晚 21:00：（粘贴正文）
+**没做的**：封面手工指定（小红书默认第一张为封面，通常够用）。
 
-## 风险检测 Skill
+## 几个平台脾气（已处理，你了解即可）
 
-流水线的检测环节使用 [dontbesilent/dbskill](https://github.com/dontbesilent2025/dbskill) 中的 **`dbs-content-risk-check`**（面向创作者的发布前风险检查：平台机器审核触发点 + 内容实质问题双层逐句检测，保留强观点与传播钩子，拒绝绕审写法）。
+- 发布页默认停在「上传视频」tab，必须先进「上传图文」
+- 底部按钮在 closed shadow DOM 里，普通文本定位拿不到
+- 打开定时开关后，按钮文案从「发布」变成「**定时发布**」
+- 过去的时间平台会**静默回退**，不报错——所以脚本自己校验，并把时间回读一遍
+- 正文是 Tiptap；编辑器的「自动存草稿」是平台行为，跑测试会在草稿箱攒垃圾
+- 活动类话题（如 #长期主义）会自动关联平台活动，不想要可以在定时记录里改
 
-原作者以 **CC BY-NC 4.0** 许可发布（非商业用途）。安装方式（任选其一）：
+## 风险边界
 
-```bash
-# 方式一：安装完整工具箱（含全部 30+ skills）
-npx -y skills add dontbesilent2025/dbskill -g --all
+浏览器自动化，不是官方接口，小红书没有开放个人发布 API。
 
-# 方式二：只要这一个 skill —— 从上游仓库复制 skills/dbs-content-risk-check/SKILL.md
-# 到你的 Agent 技能目录（ZCode: ~/.zcode/skills/dbs-content-risk-check/）
-```
+- 脚本能伪造一部分指纹，伪造不掉**行为规律**。
+- 定时发布有反悔窗口（19:31 前可取消），这是它比立即发布安全的地方。
+- 日常别高频、别多号、别矩阵。封号主因是内容违规和批量行为，不是"用了脚本"。
 
-本仓库**不包含**该 Skill 的副本，版权与许可归原作者。
-
-## 安全须知（诚实版）
-
-- 脚本操作的是**你自己的**小红书账号：真实 Chrome、真实 IP、你亲手扫码登录、只碰发布页、单账号串行、带随机延迟
-- 默认**定时发布**（有取消窗口），`--dry-run` 停在最后一步且全程 0 次提交点击，每次运行留运行报告与截图
-- 浏览器自动化在平台用户协议下属灰色地带；直接封号的概率低（风控看的是行为规律），**发布频率与内容合规由你自律**：一天 1~3 篇封顶、坚持原创、见验证码就停
-- 详见 [publish/SAFETY.md](publish/SAFETY.md)（会做什么/不会做什么/风险来自哪里）
-
-## 常见问题
-
-| 现象 | 原因 | 处理 |
-|---|---|---|
-| `chromium_headless_shell 不存在` | 跑了 `playwright install` | 不需要它；确认脚本用 `channel="chrome"` |
-| 提示未登录 | 登录态过期 | `python3 publish/login.py --qr --headed` 重扫 |
-| 按钮找不到 / 页面改版 | 小红书改版 | `python3 publish/explore.py` 重新 dump DOM，按 `publish/SELECTORS.md` 修选择器 |
-| 定时时间回读不一致 | 给了过去的时间 | 换将来时间，脚本拒收过去时间 |
-| 机器人不回消息 | 见 [docs/FEISHU-SETUP.md](docs/FEISHU-SETUP.md) 踩坑清单 | 通常是事件订阅/可用范围/版本未发布三件事 |
-
-## 许可证
-
-本仓库代码以 [MIT](LICENSE) 许可开源；推荐搭配的 `dbs-content-risk-check` Skill 归原作者所有，CC BY-NC 4.0（非商业）。
+细节见 `publish/SAFETY.md`。

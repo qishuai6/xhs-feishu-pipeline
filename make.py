@@ -11,7 +11,7 @@
   python3 make.py --dir notes/003-选题名 --schedule --headed   # 同上，能看到浏览器操作
 
 目录约定：
-  notes/示例笔记/
+  notes/001-消费转资产/
     long.md      长文本正文
     note.json    小红书那边的标题 / 正文 / 话题 / 风格
 
@@ -27,7 +27,7 @@ long.md 写法：
 note.json 字段：
   style      minimal / magazine / dark   （默认 minimal）
   kicker     封面左上角小标签，也是结尾页标签
-  author     署名，默认「署名」，在 note.json 里改
+  author     署名，note.json 里改
   closing    结尾页大字，可含换行；留空则不生成结尾页
   title      【小红书标题】≤20 字
   body       【小红书正文】可直接写，也可以用 "body_file": "body.txt"
@@ -45,6 +45,7 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent
 RENDER = BASE / "render" / "render.py"
 PUBLISH = BASE / "publish" / "publish.py"
+PUBLISH_EGO = BASE / "publish" / "ego_publish.py"
 
 PY = sys.executable
 
@@ -100,6 +101,8 @@ def main():
     ap.add_argument("--style", default=None, help="临时覆盖风格 minimal/magazine/dark")
     ap.add_argument("--keep", action="store_true", help="图片已存在时不重渲染")
     ap.add_argument("--dry-run", action="store_true", help="只试填，不点任何提交按钮")
+    ap.add_argument("--browser", default="ego", choices=["ego", "chrome"],
+                    help="发布用哪个浏览器：ego=ego lite（默认，人机共用登录态）；chrome=系统 Chrome+独立 .profile（旧方式）")
     ap.add_argument("--schedule", nargs="?", const="auto", default=None, metavar="时间",
                     help="定时发布，如 \"2026-11-05 19:31\"；不带值=当天 19:31（已过则顺延到次日）")
     args = ap.parse_args()
@@ -177,7 +180,7 @@ def main():
 
     if args.schedule:
         cmdp = [
-            PY, str(PUBLISH),
+            PY, str(PUBLISH_EGO if args.browser == "ego" else PUBLISH),
             "--meta", str(out_dir / "meta.json"),
             "--title", title,
             "--body", body,
@@ -195,7 +198,7 @@ def main():
         return
 
     cmdp = [
-        PY, str(PUBLISH),
+        PY, str(PUBLISH_EGO if args.browser == "ego" else PUBLISH),
         "--meta", str(out_dir / "meta.json"),
         "--title", title,
         "--body", body,
