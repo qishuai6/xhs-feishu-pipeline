@@ -378,3 +378,25 @@ python3 publish.py --meta "../notes/002-50岁还在跳槽/out" --body body.txt -
 - **登录态**：跟 ego lite 浏览器配置走（人机共用）。`ego_login.py --check` 判据：
   未被重定向到 /login 且页面含「上传图文|笔记管理|数据看板」特征文字。
   不要用「短信登录」字样做未登录判据（已登录页面也会残留，实测误报）。
+
+---
+
+## 微信公众号实测（2026-11-06，文章编辑器路线，ego lite）
+
+- **登录**：mp.weixin.qq.com 微信扫码（选公众号身份），登录态跟 ego lite 走。
+  未登录特征：页面含「微信扫一扫，选择公众平台账号登录」。
+- **「贴图」模式放弃**：上传控件是动态克隆 input，setInputFiles/CDP setFileInputFiles/
+  waitForFileChooser 全部实测失败（首张成功、后续静默无效）。改走「文章」编辑器。
+- **文章编辑器**：首页「新的创作 → 文章」开新 tab（appmsg_edit_v2）。
+  插图：点工具栏「图片」展开下拉 → `setInputFiles("input[name='file']", N张)`
+  **一次全部按序插入正文**（静态 input + multiple，最可靠的一环）。
+- **字段**：标题 `div.ProseMirror[data-placeholder*="标题"]`（focus+insertText，≤64字）；
+  作者 `input[name="author"]`（≤8字）；摘要 `textarea[name="digest"]`（≤120字）。
+  注意：author/digest 在编辑器内部滚动容器里，fill 前要 scrollIntoView。
+- **发表三段式**：点「发表」→右侧设置面板展开→再点「发表」→封面层（「从正文选择」→
+  弹层选第 1 张 li →「下一步」→「确认」）→再点「发表」→最终弹层：
+  群发通知（默认开）/分组通知/**定时开关 `.timer_setting .weui-desktop-switch__box`**
+  →日期列表（今天/明天/…）+时间输入框（`input.weui-desktop-form__input`，HH:MM，
+  直接设 value + 派发 input/change 事件）→「发表」→（可能二次确认）。
+- **定时规则**：5 分钟后 ~ 7 天内；取消定时恢复草稿且**不占群发次数**；
+  公众号每天仅 1 次群发额度。

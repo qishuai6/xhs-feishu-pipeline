@@ -27,7 +27,7 @@ long.md 写法：
 note.json 字段：
   style      minimal / magazine / dark   （默认 minimal）
   kicker     封面左上角小标签，也是结尾页标签
-  author     署名，note.json 里改
+  author     署名，默认「七帅」
   closing    结尾页大字，可含换行；留空则不生成结尾页
   title      【小红书标题】≤20 字
   body       【小红书正文】可直接写，也可以用 "body_file": "body.txt"
@@ -37,6 +37,7 @@ note.json 字段：
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -103,6 +104,8 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="只试填，不点任何提交按钮")
     ap.add_argument("--browser", default="ego", choices=["ego", "chrome"],
                     help="发布用哪个浏览器：ego=ego lite（默认，人机共用登录态）；chrome=系统 Chrome+独立 .profile（旧方式）")
+    ap.add_argument("--platform", default="xhs", choices=["xhs", "wechat"],
+                    help="发布到哪个平台：xhs=小红书（默认）；wechat=微信公众号（文章贴图）")
     ap.add_argument("--schedule", nargs="?", const="auto", default=None, metavar="时间",
                     help="定时发布，如 \"2026-11-05 19:31\"；不带值=当天 19:31（已过则顺延到次日）")
     args = ap.parse_args()
@@ -179,6 +182,23 @@ def main():
         sys.exit("✗ note.json 里没有 body（小红书正文），无法填草稿")
 
     if args.schedule:
+        if args.platform == "wechat":
+            digest = re.sub(r"\s+", " ", body).strip()[:120]
+            cmdp = [
+                PY, str(BASE / "publish" / "wechat_publish.py"),
+                "--images", str(out_dir),
+                "--title", title,
+                "--digest", digest,
+                "--author", cfg.get("author", "署名"),
+                "--schedule", schedule_time,
+            ]
+            if args.dry_run:
+                cmdp.append("--dry-run")
+            print(f"\n▶ 公众号定时发表（{schedule_time}）…")
+            rp = subprocess.run(cmdp, text=True)
+            if rp.returncode != 0:
+                sys.exit("✗ 公众号发布失败，看上面的报错和 publish/logs/ 里的截图")
+            return
         cmdp = [
             PY, str(PUBLISH_EGO if args.browser == "ego" else PUBLISH),
             "--meta", str(out_dir / "meta.json"),
