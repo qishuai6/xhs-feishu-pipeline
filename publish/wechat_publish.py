@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""微信公众号文章发布器（ego lite 浏览器版）。
+"""微信公众号「贴图」发布器（ego lite 浏览器版）。
 
-流程：文章编辑器插入卡片图（正文竖排）+ 标题 + 作者 + 摘要 → 保存草稿 / 定时发表。
-公众号每天只有 1 次群发（定时）额度，定时设置后可取消（恢复草稿，不占次数）。
+流程：新建贴图 → 图片上传（首张直传+后续入素材库勾选）→ 标题(≤20字) + 描述(≤1000字)
+→ 保存草稿。按用户需求：填好即存草稿，不自动发表（公众号每天仅 1 次群发额度）。
 
 用法（一般由 make.py --platform wechat 调用）：
     python3 wechat_publish.py --images ../notes/xxx/out --title 标题 \
-        --digest 摘要 --author 署名 [--schedule "2026-11-06 19:00" | --draft | --dry-run]
+        --digest 摘要 --author 七帅 [--schedule "2026-11-06 19:00" | --draft | --dry-run]
 """
 
 import argparse
@@ -25,8 +25,8 @@ from publish import normalize_title, parse_schedule, resolve_images, validate_sc
 DRIVER = PUBLISH_DIR / "wechat_publish.mjs"
 LOGS_DIR = PUBLISH_DIR / "logs"
 RUN_TIMEOUT = 15 * 60
-MAX_TITLE = 64
-MAX_DIGEST = 120
+MAX_TITLE = 20          # 贴图模式标题上限（同小红书）
+MAX_DIGEST = 1000        # 贴图描述上限
 
 
 def run_ego(cfg):
@@ -76,34 +76,30 @@ def main():
     ap.add_argument("--images", required=True, help="图片目录 / 逗号分隔 / 通配符")
     ap.add_argument("--title", required=True, help="标题（≤64 字）")
     ap.add_argument("--digest", default="", help="摘要（≤120 字，转发卡片展示；不填抓正文开头）")
-    ap.add_argument("--author", default="署名", help="作者名（≤8 字）")
+    ap.add_argument("--author", default="署名", help="兼容参数：贴图模式无作者字段，忽略")
     ap.add_argument("--schedule", default=None, help="定时发表 \"YYYY-MM-DD HH:MM\"（5分钟后~7天内）")
     ap.add_argument("--draft", action="store_true", help="只保存草稿（默认）")
     ap.add_argument("--dry-run", action="store_true", help="填好+保存草稿，不点任何发表按钮")
     args = ap.parse_args()
 
     images = resolve_images(args.images, str(PUBLISH_DIR))
+    # 复制到临时目录并加唯一前缀：素材库按文件名勾选，必须避免与历史图同名
+    import shutil
+    up_dir = Path("/tmp") / ("wx-upload-" + datetime.datetime.now().strftime("%Y%m%d%H%M%S"))
+    up_dir.mkdir(parents=True, exist_ok=True)
+    uniq_images = []
+    for i, src in enumerate(images, 1):
+        dst = up_dir / ("wx%s-%02d-%s" % (datetime.datetime.now().strftime("%H%M%S"), i, Path(src).name))
+        shutil.copy2(src, dst)
+        uniq_images.append(str(dst))
+    images = uniq_images
     title = normalize_title(args.title)[:MAX_TITLE]
     digest = (args.digest or "")[:MAX_DIGEST]
 
-    schedule_dt = parse_schedule(args.schedule) if args.schedule else None
-    if schedule_dt:
-        validate_schedule_target(schedule_dt)
-        mode = "dry-run" if args.dry_run else "schedule"
-    else:
-        mode = "dry-run" if args.dry_run else "draft"
-
-    now = datetime.datetime.now()
-    schedule_day = None
-    schedule_time = None
-    if schedule_dt:
-        delta = (schedule_dt.date() - now.date()).days
-        if delta < 0 or delta > 6:
-            raise SystemExit("❌ 公众号定时仅支持 5 分钟后 ~ 7 天内（你给的：%s）" % schedule_dt)
-        schedule_day = "today" if delta == 0 else ("tomorrow" if delta == 1 else str(delta))
-        schedule_time = schedule_dt.strftime("%H:%M")
-        if delta == 0 and schedule_dt <= now + datetime.timedelta(minutes=5):
-            raise SystemExit("❌ 定时时间至少在 5 分钟后")
+    if args.schedule:
+        raise SystemExit("❌ 贴图模式当前只支持「填好+存草稿」，不支持自动定时发表。\n"
+                         "   （公众号每天仅 1 次群发额度，定时请到草稿箱手动操作；需要自动定时时说一声）")
+    mode = "dry-run" if args.dry_run else "draft"
 
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     cfg = {
@@ -113,16 +109,12 @@ def main():
         "title": title,
         "digest": digest,
         "author": args.author[:8],
-        "schedule": schedule_dt.strftime("%Y-%m-%d %H:%M") if schedule_dt else None,
-        "schedule_day": schedule_day,
-        "schedule_time": schedule_time,
         "logs_dir": str(LOGS_DIR),
         "stamp": stamp,
     }
     print("=" * 60)
-    print("公众号发布：%d 图 / 标题 %d 字 / 摘要 %d 字 / 模式 %s%s"
-          % (len(images), len(title), len(digest), mode,
-             (" / 定时 " + cfg["schedule"]) if cfg["schedule"] else ""))
+    print("公众号贴图：%d 图 / 标题 %d 字 / 描述 %d 字 / 模式 %s"
+          % (len(images), len(title), len(digest), mode))
     print("=" * 60)
 
     result = run_ego(cfg)
@@ -130,7 +122,7 @@ def main():
     report = {
         "stamp": stamp, "engine": "ego-browser", "platform": "wechat",
         "space": cfg["space_name"], "result": result.get("result"), "ok": result.get("ok"),
-        "meta": {k: cfg[k] for k in ("mode", "title", "digest", "author", "schedule")},
+        "meta": {k: cfg[k] for k in ("mode", "title", "digest", "author")},
         "images": [Path(p).name for p in images],
         "clicks": result.get("clicks", []),
         "verify": result.get("verify"),
@@ -146,11 +138,8 @@ def main():
     if not result.get("ok"):
         print("\n❌ 失败（步骤 %s）：%s" % (result.get("error_step"), result.get("error")))
         return 1
-    if mode == "schedule":
-        print("\n✓ 已提交定时发表 %s（公众号到点自动群发）" % cfg["schedule"])
-        print("  发表前可在 mp.weixin.qq.com → 发表记录 取消（恢复草稿，不占次数）")
-    else:
-        print("\n✓ 已保存草稿（未点任何发表按钮）。到 mp.weixin.qq.com → 内容管理 查看。")
+    print("\n✓ 贴图已填好并保存草稿（未点任何发表按钮）。")
+    print("  到 mp.weixin.qq.com → 内容管理 → 草稿 检查，由你决定何时发表。")
     return 0
 
 

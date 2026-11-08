@@ -1,43 +1,37 @@
-// wechat_publish.mjs — 公众号文章发布驱动（跑在 ego lite，由 wechat_publish.py 注入 CONFIG）
+// wechat_publish.mjs — 微信公众号「贴图」发布驱动（ego lite）
 //
-// 实测结论（2026-11-06，见 SELECTORS.md 微信节）：
-// - 文章编辑器：首页「新的创作 → 文章」开新 tab
-// - 插图：点工具栏「图片」展开下拉后，setInputFiles("input[name='file']", N张) 一次全部插入正文
-//   （「贴图」编辑器的动态 input 无法自动化——多方案实测失败，已放弃）
-// - 标题=ProseMirror focus+insertText（≤64字）；作者 input[name=author]；摘要 textarea[name=digest]（≤120字）
-// - 发表链：发表 → 侧面板 → 发表 → 封面（从正文选择→第1张→下一步→确认）→ 发表 →
-//   最终弹层（定时开关 .timer_setting .weui-desktop-switch__box → 日期列表 + 时间输入 HH:MM）→ 发表
-// - 定时规则：5分钟后~7天内；取消定时不占群发次数（每天仅 1 次群发额度！）
+// 流程（2026-11-08 实测打通，见 SELECTORS.md 微信节）：
+//   新建贴图 → 第1张 CDP 直传 → 后续逐张「+ → 本地上传(chooser)」入素材库
+//   → 「从图片库选择」按文件名勾选（勾选顺序=贴图顺序）→ 确定 → 计数验证
+//   → 填标题(≤20)/描述(≤1000) → 保存草稿
 //
-// evaluate 必须传函数（传字符串静默返回 {}）。
+// 关键实测结论：
+// - 「本地上传」chooser.setFiles 的图进入素材库但不自动插入，必须库里勾选+确定
+// - 选择器卡片 = .weui-desktop-img-picker__item，点击后加 .selected
+// - 编辑器贴图计数是页面文本「N N」（非 mmbiz img），验证以计数为准
+// - evaluate 必须传函数；选择器开着会挡 bottom-add，先确定关掉再进下一轮
 
 const ev = (name, data) => console.log(JSON.stringify({ ev: name, ...data }));
-function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// ---------- 页面探测函数 ----------
-
-const markText = (text, exact) => {
-  // 精确文本标记：找可见的、文案完全匹配的最小元素（按钮/链接/菜单项通用）
+const markText = (text) => {
   document.querySelectorAll("[data-wx-pick]").forEach((e) => e.removeAttribute("data-wx-pick"));
-  let best = null;
-  for (const el of document.querySelectorAll("button,a,div,span,li,label")) {
-    const t = (el.innerText || "").trim();
-    if (exact ? t !== text : !t.includes(text)) continue;
-    const r = el.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) continue;
-    if (r.left < -5 || r.top < -5 || r.bottom > innerHeight + 2000) continue;
-    if (!best || r.width * r.height < best.a) best = { el, a: r.width * r.height };
+  for (const el of document.querySelectorAll("div,span,a,button,li")) {
+    if ((el.innerText || "").trim() === text) {
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) continue;
+      el.setAttribute("data-wx-pick", "1");
+      return true;
+    }
   }
-  if (best) { best.el.setAttribute("data-wx-pick", "1"); return true; }
   return false;
 };
 
-const bodyImgs = () => Array.from(document.querySelectorAll("img"))
-  .filter((i) => (i.src || "").includes("mmbiz") && i.getBoundingClientRect().height > 50).length;
-
-const clickByText = `(text) => ${markText.toString()}(text, true)`; // 占位（不用）
-
-// ---------- 主流程 ----------
+const editorCount = () => {
+  // 贴图编辑器的图片计数：页面文本里「N」+「N」的图片卡计数（历史版本下方）
+  const m = (document.body.innerText || "").match(/(\d+)\s*\n(\d+)\s*\n/);
+  return m ? parseInt(m[1], 10) : -1;
+};
 
 const clicks = [];
 
@@ -47,21 +41,12 @@ async function stepShot(page, name) {
   catch (e) { ev("shot-failed", { name, error: String(e).slice(0, 120) }); return null; }
 }
 
-async function clickMarked(page, purpose, opts = {}) {
-  const ok = await page.evaluate(markText, opts.text).catch(() => false);
-  if (!ok) throw new Error(`找不到「${opts.text}」`);
+async function clickMarked(page, text, purpose) {
+  const ok = await page.evaluate(markText, text).catch(() => false);
+  if (!ok) throw new Error(`找不到「${text}」`);
   await page.click('[data-wx-pick="1"]');
-  clicks.push({ purpose, text: opts.text, allow_submit: !!opts.allow_submit });
-  ev("click", { purpose, text: opts.text, allow_submit: !!opts.allow_submit });
-}
-
-async function waitText(page, text, timeout = 15000) {
-  for (let t = 0; t < timeout / 500; t++) {
-    const has = await page.evaluate((s) => (document.body.innerText || "").includes(s), text).catch(() => false);
-    if (has) return true;
-    await sleep(500);
-  }
-  return false;
+  clicks.push({ purpose: purpose || text, text });
+  ev("click", { purpose: purpose || text });
 }
 
 async function main() {
@@ -71,7 +56,6 @@ async function main() {
   const result = { mode: CONFIG.mode, ok: false, clicks };
 
   try {
-    // 0. 定位权限屏蔽（保险）
     try {
       await page.cdp("Page.addScriptToEvaluateOnNewDocument", {
         source: `if (navigator.geolocation) {
@@ -82,14 +66,13 @@ async function main() {
       });
     } catch {}
 
-    // 1. 打开公众号首页 + 登录检查
+    // 1. 首页 + 登录检查
     await page.goto("https://mp.weixin.qq.com", { timeout: 40000 });
     try { await page.waitForLoadState("load", { timeout: 15000 }); } catch {}
     await sleep(2000);
-    let url = await page.url();
-    const loginWall = await page.evaluate(() => /微信扫一扫，选择公众平台账号登录/.test(document.body.innerText || "")).catch(() => false);
-    ev("navigate", { url });
-    if (loginWall) {
+    const wall = await page.evaluate(() =>
+      /微信扫一扫，选择公众平台账号登录/.test(document.body.innerText || "")).catch(() => false);
+    if (wall) {
       result.error_step = "login";
       result.error = "ego lite 里没有公众号登录态。请先跑：python3 publish/wechat_login.py --qr";
       await stepShot(page, "login-required");
@@ -97,176 +80,221 @@ async function main() {
       return;
     }
 
-    // 2. 进「文章」编辑器（新 tab）
-    await clickMarked(page, "新的创作-文章", { text: "文章" });
+    // 2. 新建「贴图」（新 tab）
+    await clickMarked(page, "贴图", "新建贴图");
     await sleep(3500);
     const tabs = await task.tabs();
-    const newTab = tabs.find((t) => t.active && t.label !== "p1");
-    if (!newTab) throw new Error("文章编辑器没有打开");
-    const ed = task.page(newTab.label);
-    page = ed;
-    ev("editor-open", { tab: newTab.label });
-    await waitText(page, "请在这里输入标题", 15000);
+    const t = tabs.find((x) => x.active && x.label !== "p1");
+    if (!t) throw new Error("贴图编辑器没有打开");
+    page = task.page(t.label);
+    if (!(t.url || "").includes("type=77")) throw new Error("打开的不是贴图编辑器（type=77）");
+    ev("editor-open", { tab: t.label });
     await stepShot(page, "01-editor");
 
-    // 3. 插图：点工具栏「图片」展开下拉 → setInputFiles
-    await clickMarked(page, "工具栏-图片", { text: "图片" });
-    await sleep(1200);
-    // 等静态 input[name=file]（下拉展开后可见）
-    let hasInput = await page.evaluate(() => {
-      const i = document.querySelector('input[name="file"]');
-      return !!(i && (i.innerText !== undefined));
-    }).catch(() => false);
-    // input 不依赖可见性，直接设置
-    await page.setInputFiles('input[name="file"]', CONFIG.images);
-    ev("upload-set", { count: CONFIG.images.length });
-    let n = 0;
-    for (let t = 0; t < 60; t++) {
-      await sleep(2000);
-      n = await page.evaluate(bodyImgs).catch(() => 0);
-      if (n >= CONFIG.images.length) break;
+    async function count() {
+      // 真实计数 = 大图预览徽标「N/N」（分子分母相等且>0，区别于标题 0/20、描述 0/1000）
+      return await page.evaluate(() => {
+        const txt = document.body.innerText || "";
+        // 口径1：徽标「N/N」字符串（分子分母相等）
+        const badge = (txt.match(/(\d+)\s*\/\s*(\d+)/g) || [])
+          .map((x) => { const m = x.match(/(\d+)\s*\/\s*(\d+)/); return [parseInt(m[1], 10), parseInt(m[2], 10)]; })
+          .filter(([a, b]) => a === b && a > 0 && a < 40);
+        if (badge.length) return Math.max(...badge.map(([a]) => a));
+        // 口径2：分立双数字节点「N\nN」（贴图编辑器实际渲染形态）
+        const pair = txt.match(/(?:^|\n)(\d{1,2})\s*\n\s*\1(?:\s|\n)/);
+        if (pair && parseInt(pair[1], 10) > 0) return parseInt(pair[1], 10);
+        // 口径3兜底：mmbiz 大图
+        return Array.from(document.querySelectorAll("img"))
+          .filter((i) => (i.src || "").includes("mmbiz")
+                  && i.getBoundingClientRect().width > 100 && i.getBoundingClientRect().height > 100).length;
+      }).catch(() => 0);
     }
-    ev("upload-done", { imgs: n });
-    if (n < CONFIG.images.length) {
-      throw new Error(`插图不完整：目标 ${CONFIG.images.length} 张，正文 ${n} 张`);
-    }
-    await stepShot(page, "02-images");
 
-    // 4. 标题 / 作者 / 摘要
-    await page.focus('div.ProseMirror[data-placeholder*="标题"]');
-    await page.keyboard.insertText(CONFIG.title);
-    await sleep(400);
-    for (const [sel, val, purpose] of [
-      ['input[name="author"]', CONFIG.author, "作者"],
-      ['textarea[name="digest"]', CONFIG.digest, "摘要"],
-    ]) {
-      if (!val) continue;
-      // 先滚进视口（编辑器是内部滚动容器，fill 要求可见）
-      await page.evaluate((s) => {
-        const el = document.querySelector(s);
-        if (el) el.scrollIntoView({ block: "center" });
-      }, sel).catch(() => {});
-      await sleep(400);
-      try {
-        await page.fill(sel, val);
-      } catch {
-        await page.focus(sel);
-        await page.keyboard.insertText(val);
-      }
-      await sleep(300);
-    }
-    const filled = await page.evaluate(() => ({
-      title: (document.querySelector('div.ProseMirror[data-placeholder*="标题"]') || { innerText: "" }).innerText.trim(),
-      author: (document.querySelector('input[name="author"]') || {}).value || "",
-      digestLen: ((document.querySelector('textarea[name="digest"]') || {}).value || "").length,
-    }));
-    ev("filled", filled);
-    if (!filled.title) throw new Error("标题写入失败");
-    await stepShot(page, "03-filled");
-
-    // 5. 分支
-    if (CONFIG.mode === "dry-run" || CONFIG.mode === "draft") {
-      // 保存草稿（dry-run 也存草稿：内容安全落袋，绝不点发表）
-      await clickMarked(page, "保存为草稿", { text: "保存为草稿" });
-      await sleep(3500);
-      const saved = await page.evaluate(() => /已保存|保存成功/.test(document.body.innerText || "")).catch(() => false);
-      ev("draft", { saved });
-      await stepShot(page, "04-draft");
-      result.ok = true;
-      result.result = CONFIG.mode === "dry-run" ? "dry-run-ok(draft-saved)" : "draft-ok";
-      result.note = "草稿已保存，未点任何发表按钮";
-    } else if (CONFIG.mode === "schedule") {
-      // 6. 发表三段式
-      await clickMarked(page, "发表(第1次)", { text: "发表" });
-      await sleep(2000);
-      await clickMarked(page, "发表(第2次)", { text: "发表" });
-      await sleep(2000);
-      // 封面层
-      if (await waitText(page, "拖拽或选择封面", 8000)) {
-        await clickMarked(page, "封面-从正文选择", { text: "从正文选择" });
-        await sleep(2000);
-        // 弹层选第 1 张
-        const picked = await page.evaluate(() => {
-          const dlg = Array.from(document.querySelectorAll("div"))
-            .find((d) => (d.innerText || "").includes("请从正文插入的图片") && d.getBoundingClientRect().height > 100 && d.getBoundingClientRect().height < 900);
-          if (!dlg) return false;
-          const li = dlg.querySelectorAll("li")[0];
-          if (!li) return false;
-          li.setAttribute("data-wx-img", "1");
-          return true;
-        });
-        if (!picked) throw new Error("封面图片列表没找到");
-        await page.click('[data-wx-img="1"]');
-        await sleep(800);
-        await clickMarked(page, "封面-下一步", { text: "下一步" });
-        await sleep(1500);
-        await clickMarked(page, "封面-确认", { text: "确认" });
-        await sleep(1500);
-        await stepShot(page, "05-cover");
-        // 封面后第三次点发表
-        await clickMarked(page, "发表(第3次)", { text: "发表" });
-        await sleep(2000);
-      }
-      // 最终弹层：定时开关
-      if (!await waitText(page, "定时发表", 8000)) throw new Error("发表确认弹层没出现");
-      await page.evaluate(() => {
-        const box = document.querySelector(".timer_setting .weui-desktop-switch__box");
-        if (box) { box.scrollIntoView({ block: "center" }); box.click(); }
-      });
-      await sleep(1500);
-      const checked = await page.evaluate(() => {
-        const t = document.querySelector(".timer_setting");
-        return t && t.querySelector("input") ? t.querySelector("input").checked : false;
-      });
-      ev("timer-switch", { checked });
-      if (!checked) throw new Error("定时开关没打开");
-      // 日期：列表里点「今天」或「明天」
-      const dayText = CONFIG.schedule_day === "tomorrow" ? "明天" : "今天";
-      await clickMarked(page, "定时日期-" + dayText, { text: dayText });
-      await sleep(800);
-      // 时间：时间输入框（weui-desktop-form__input，HH:MM）
-      const timeSet = await page.evaluate((hhmm) => {
-        const inputs = Array.from(document.querySelectorAll("input.weui-desktop-form__input"));
-        const t = inputs.find((i) => /^\d{2}:\d{2}$/.test((i.value || "").trim()));
-        if (!t) return false;
-        t.focus();
-        t.value = hhmm;
-        t.dispatchEvent(new Event("input", { bubbles: true }));
-        t.dispatchEvent(new Event("change", { bubbles: true }));
-        t.blur();
-        return true;
-      }, CONFIG.schedule_time).catch(() => false);
-      ev("time-set", { ok: timeSet, value: CONFIG.schedule_time });
-      await sleep(1000);
-      await stepShot(page, "06-timer-set");
-      // 发表（最终确认）
-      await clickMarked(page, "定时发表-确认", { text: "发表", allow_submit: true });
-      await sleep(3000);
-      // 可能有二次确认
-      for (const t of ["确认", "确定"]) {
-        const ok = await page.evaluate(markText, t).catch(() => false);
-        if (ok) {
-          await page.click('[data-wx-pick="1"]');
-          clicks.push({ purpose: "发表确认", text: t, allow_submit: true });
-          await sleep(2500);
-          break;
+    // 3. 全部图片：+ → 本地上传(chooser) → 入素材库（不自动插入，最后统一勾选）
+    const names = CONFIG.images.map((p) => p.split("/").pop());
+    for (let k = 0; k < CONFIG.images.length; k++) {
+      // 打开上传面板：首轮点「选择或拖拽图片」初始区，之后点 + 按钮
+      let added = false;
+      for (let r = 0; r < 3 && !added; r++) {
+        try { await page.click(".image-selector__bottom-add", { timeout: 2000 }); added = true; }
+        catch {
+          const init = await page.evaluate(() => {
+            document.querySelectorAll("[data-wx-init]").forEach((e) => e.removeAttribute("data-wx-init"));
+            let best = null;
+            for (const el of document.querySelectorAll("div")) {
+              const t = el.innerText || "";
+              if (t.includes("选择或拖拽图片") && !t.includes("标题") && el.children.length < 8) {
+                const rr = el.getBoundingClientRect();
+                if (rr.width > 80 && rr.height > 80 && (!best || rr.width * rr.height < best.a)) best = { el, a: rr.width * rr.height };
+              }
+            }
+            if (best) { best.el.setAttribute("data-wx-init", "1"); return true; }
+            return false;
+          });
+          if (init) { try { await page.click('[data-wx-init="1"]', { timeout: 2000 }); added = true; } catch {} }
         }
+        if (!added) await sleep(800);
       }
-      await stepShot(page, "07-published");
-      // 验证：页面提示或跳转
-      const verifyText = await page.evaluate(() => (document.body.innerText || "").slice(0, 3000)).catch(() => "");
-      const found = /定时发表|发表成功|已进入/.test(verifyText);
-      result.verify = { page_hint: found, url: await page.url() };
-      result.ok = found;
-      result.result = found ? "scheduled" : "scheduled-unverified";
+      if (!added) throw new Error(`第 ${k + 1} 张：上传面板打不开`);
+      await sleep(1000);
+      const hasLocal = await page.evaluate(() => {
+        document.querySelectorAll("[data-wx-local]").forEach((e) => e.removeAttribute("data-wx-local"));
+        const el = Array.from(document.querySelectorAll("div,span,a"))
+          .find((e) => (e.innerText || "").trim() === "本地上传" && e.getBoundingClientRect().width > 0);
+        if (el) { el.setAttribute("data-wx-local", "1"); return true; }
+        return false;
+      });
+      if (!hasLocal) throw new Error(`第 ${k + 1} 张：上传面板没打开`);
+      const chooserPromise = page.waitForFileChooser({ timeout: 8000 });
+      await page.click('[data-wx-local="1"]');
+      const chooser = await chooserPromise;
+      await chooser.setFiles([CONFIG.images[k]]);
+      clicks.push({ purpose: `本地上传 ${names[k]}`, text: "本地上传" });
+      ev("lib-upload", { file: names[k] });
+      // 入库通常 2~4s；面板自动收起
+      await sleep(3500);
+      // 若面板还开着（选择器挡 + 按钮），先取消
+      await page.evaluate(() => {
+        const dlg = Array.from(document.querySelectorAll("div"))
+          .find((d) => (d.innerText || "").includes("最近使用") && (d.innerText || "").includes("确定"));
+        if (dlg) {
+          const cancel = Array.from(dlg.querySelectorAll("button,a"))
+            .find((b) => (b.innerText || "").trim() === "取消" && b.getBoundingClientRect().width > 0);
+          if (cancel) cancel.click();
+        }
+      });
+      await sleep(600);
     }
 
+    // 5. 按缺口从图片库补选（上传各环节插入行为不稳定：初始区会插入、+面板只入库，
+    //    所以先数编辑器实际张数，缺几张就从库里勾几张本轮唯一名图）
+    let cur = await count();
+    for (let w = 0; w < 10; w++) {
+      await sleep(2000);
+      const again = await count();
+      if (again === cur && cur >= 1) break;
+      cur = again;
+    }
+    const need = CONFIG.images.length - cur;
+    ev("gap-check", { current: cur, need });
+    if (need > 0) {
+      await page.click(".image-selector__bottom-add", { timeout: 5000 });
+      await sleep(1500);
+      await clickMarked(page, "从图片库选择", "打开图片库");
+      await sleep(2500);
+      let pickedN = 0;
+      for (const name of names) {
+        if (pickedN >= need) break;
+        const hit = await page.evaluate((nm) => {
+          document.querySelectorAll("[data-wx-card]").forEach((e) => e.removeAttribute("data-wx-card"));
+          const card = Array.from(document.querySelectorAll(".weui-desktop-img-picker__item"))
+            .find((d) => (d.innerText || "").includes(nm));
+          if (!card || card.classList.contains("selected")) return false;
+          card.setAttribute("data-wx-card", "1");
+          return true;
+        }, name).catch(() => false);
+        if (!hit) { ev("card-miss", { name }); continue; }
+        await page.click('[data-wx-card="1"]');
+        pickedN += 1;
+        await sleep(400);
+        ev("card-picked", { name });
+      }
+      const selCount = await page.evaluate(() =>
+        document.querySelectorAll(".weui-desktop-img-picker__item.selected").length).catch(() => 0);
+      ev("selected", { count: selCount });
+      await stepShot(page, "02-library-picked");
+      if (selCount < need) ev("warn", { msg: `库里只勾到 ${selCount}/${need}` });
+    } else if (need < 0) {
+      ev("warn", { msg: `贴图数 ${cur} 超过预期 ${CONFIG.images.length}，请人工检查草稿` });
+      await stepShot(page, "02-overcount");
+    }
+    // 确定（仅补选过才需要点；need<=0 时选择器未打开）
+    if (need > 0) {
+      await page.evaluate(() => {
+        document.querySelectorAll("[data-wx-ok]").forEach((e) => e.removeAttribute("data-wx-ok"));
+        const card = document.querySelector(".weui-desktop-img-picker__item");
+        let p = card;
+        for (let i = 0; i < 12 && p; i++) {
+          if ((p.innerText || "").includes("确定")) break;
+          p = p.parentElement;
+        }
+        const scope = p || document;
+        for (const el of scope.querySelectorAll("button,a")) {
+          if ((el.innerText || "").trim() === "确定" && el.getBoundingClientRect().width > 0) {
+            el.setAttribute("data-wx-ok", "1");
+            break;
+          }
+        }
+      });
+      const hasOk = await page.evaluate(() => !!document.querySelector('[data-wx-ok="1"]'));
+      if (!hasOk) throw new Error("选择器里找不到「确定」");
+      await page.click('[data-wx-ok="1"]');
+      clicks.push({ purpose: "图片库-确定", text: "确定" });
+      await sleep(3000);
+    } else {
+      ev("skip-confirm", { reason: "无需补选" });
+    }
+
+    // 6. 验证贴图数量（计数文本 + mmbiz img 双口径，取大者）
+    const total = await count();
+    ev("insert-verify", { total, expect: CONFIG.images.length });
+    if (total > CONFIG.images.length) {
+      ev("warn", { msg: `贴图数量 ${total} 超过预期 ${CONFIG.images.length}，请人工检查草稿` });
+    }
+    result.images = total;
+    await stepShot(page, "03-inserted");
+
+    // 7. 标题 + 描述（focus 方式；描述编辑器高度>100 的 ProseMirror）
+    await page.evaluate(() => {
+      document.querySelectorAll("[data-wx-title]").forEach((e) => e.removeAttribute("data-wx-title"));
+      const t = Array.from(document.querySelectorAll("div[contenteditable=\"true\"].ProseMirror"))
+        .find((e) => (e.getAttribute("data-placeholder") || "").includes("标题"));
+      if (t) t.setAttribute("data-wx-title", "1");
+    });
+    await page.focus('[data-wx-title="1"]');
+    await page.keyboard.insertText(CONFIG.title);
+    await sleep(500);
+    if (CONFIG.digest) {
+      await page.evaluate(() => {
+        document.querySelectorAll("[data-wx-body]").forEach((e) => e.removeAttribute("data-wx-body"));
+        const b = Array.from(document.querySelectorAll("div[contenteditable=\"true\"].ProseMirror"))
+          .find((e) => !(e.getAttribute("data-placeholder") || "").includes("标题") && e.getBoundingClientRect().height > 100);
+        if (b) b.setAttribute("data-wx-body", "1");
+      });
+      const hasBody = await page.evaluate(() => !!document.querySelector('[data-wx-body="1"]'));
+      if (hasBody) {
+        await page.focus('[data-wx-body="1"]');
+        await page.keyboard.insertText(CONFIG.digest);
+        await sleep(500);
+      }
+    }
+    const filled = await page.evaluate(() => {
+      const t = document.querySelector('[data-wx-title="1"]');
+      const b = document.querySelector('[data-wx-body="1"]');
+      return { title: t ? t.innerText.trim() : "", bodyLen: b ? (b.innerText || "").replace(/\s/g, "").length : 0 };
+    });
+    ev("filled", filled);
+    await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+    await sleep(400);
+    await stepShot(page, "04-filled");
+
+    // 8. 保存草稿
+    await clickMarked(page, "保存为草稿", "保存草稿");
+    await sleep(3500);
+    const saved = await page.evaluate(() =>
+      /已保存|保存成功/.test(document.body.innerText || "")).catch(() => false);
+    ev("draft-saved", { saved });
+    await stepShot(page, "05-draft");
+
+    result.ok = saved && filled.title && total >= Math.min(CONFIG.images.length, 1);
+    result.result = result.ok ? "draft-ok" : "draft-unverified";
+    result.filled = filled;
     console.log("EGO_RESULT " + JSON.stringify(result));
     await task.finish({ keep: [] });
   } catch (e) {
     result.error_step = e.step || "unexpected";
     result.error = String(e.message || e);
-    await stepShot(page, "fail-" + (result.error_step)).catch(() => {});
+    await stepShot(page, "fail-" + result.error_step).catch(() => {});
     console.log("EGO_RESULT " + JSON.stringify(result));
   }
 }
