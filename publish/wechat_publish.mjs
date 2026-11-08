@@ -41,6 +41,19 @@ async function stepShot(page, name) {
   catch (e) { ev("shot-failed", { name, error: String(e).slice(0, 120) }); return null; }
 }
 
+async function insertTextParas(page, text) {
+  // ProseMirror 编辑器：整段 insertText 会吞掉 \n，必须「段落间 Enter、段内换行 Shift+Enter」
+  const paras = text.replace(/\r\n/g, "\n").split(/\n\s*\n/).filter((x) => x.trim());
+  for (let pi = 0; pi < paras.length; pi++) {
+    const lines = paras[pi].split("\n");
+    for (let li = 0; li < lines.length; li++) {
+      if (lines[li]) await page.keyboard.insertText(lines[li]);
+      if (li < lines.length - 1) { await page.keyboard.press("Shift+Enter"); await sleep(80); }
+    }
+    if (pi < paras.length - 1) { await page.keyboard.press("Enter"); await sleep(120); }
+  }
+}
+
 async function clickMarked(page, text, purpose) {
   const ok = await page.evaluate(markText, text).catch(() => false);
   if (!ok) throw new Error(`找不到「${text}」`);
@@ -264,7 +277,7 @@ async function main() {
       const hasBody = await page.evaluate(() => !!document.querySelector('[data-wx-body="1"]'));
       if (hasBody) {
         await page.focus('[data-wx-body="1"]');
-        await page.keyboard.insertText(CONFIG.digest);
+        await insertTextParas(page, CONFIG.digest);
         await sleep(500);
       }
     }
