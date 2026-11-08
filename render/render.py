@@ -307,18 +307,19 @@ def note_css(style_key, color_idx, fs_override=None):
 def title_size(title):
     n = max((len(x) for x in title.split("\n") if x), default=6)
     if n <= 8:
-        return 96, 1.3
+        return 112, 1.26
     if n <= 12:
-        return 82, 1.32
+        return 96, 1.3
     if n <= 16:
-        return 70, 1.36
-    return 58, 1.42
+        return 82, 1.34
+    return 68, 1.4
 
 
 def cover_html(st, title, lead, kicker, author, css):
     lines = [l for l in title.split("\n") if l.strip()]
     n0 = len(lines[0]) if lines else 0
-    main = 96 if n0 <= 7 else 84 if n0 <= 10 else 72 if n0 <= 13 else 60
+    # 封面主标题：信息流里要一眼读清，整体调大一档（短标题拉满到 120px）
+    main = 120 if n0 <= 6 else 108 if n0 <= 8 else 96 if n0 <= 10 else 84 if n0 <= 13 else 68
     parts = []
     for i, l in enumerate(lines):
         if i == 0:
