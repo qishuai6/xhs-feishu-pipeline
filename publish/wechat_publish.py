@@ -7,7 +7,7 @@
 
 用法（一般由 make.py --platform wechat 调用）：
     python3 wechat_publish.py --images ../notes/xxx/out --title 标题 \
-        --digest 摘要 --author 七帅 [--schedule "2026-11-06 19:00" | --draft | --dry-run]
+        --digest 描述 [--draft "2026-11-06 19:00" | --draft | --dry-run]
 """
 
 import argparse
