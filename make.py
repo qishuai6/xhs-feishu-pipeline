@@ -105,7 +105,7 @@ def main():
     ap.add_argument("--browser", default="ego", choices=["ego", "chrome"],
                     help="发布用哪个浏览器：ego=ego lite（默认，人机共用登录态）；chrome=系统 Chrome+独立 .profile（旧方式）")
     ap.add_argument("--platform", default="xhs", choices=["xhs", "wechat"],
-                    help="发布到哪个平台：xhs=小红书（默认）；wechat=微信公众号（文章贴图）")
+                    help="发布到哪个平台：xhs=小红书（默认）；wechat=微信公众号贴图（填好+存草稿）")
     ap.add_argument("--schedule", nargs="?", const="auto", default=None, metavar="时间",
                     help="定时发布，如 \"2026-11-05 19:31\"；不带值=当天 19:31（已过则顺延到次日）")
     args = ap.parse_args()
