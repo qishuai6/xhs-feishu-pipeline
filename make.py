@@ -181,24 +181,25 @@ def main():
     if not body:
         sys.exit("✗ note.json 里没有 body（小红书正文），无法填草稿")
 
+    if args.platform == "wechat":
+        # 贴图模式：填好 + 存草稿（公众号每天仅 1 次群发额度，发表动作留给用户）
+        cmdp = [
+            PY, str(BASE / "publish" / "wechat_publish.py"),
+            "--images", str(out_dir),
+            "--title", title,
+            "--digest", body.strip()[:1000],
+        ]
+        if args.dry_run:
+            cmdp.append("--dry-run")
+        print("\n▶ 公众号贴图（填好 + 保存草稿）…")
+        if args.schedule:
+            print(f"  ℹ️ 贴图模式不自动发表；如需定时 {schedule_time}，到草稿箱手动设置")
+        rp = subprocess.run(cmdp, text=True)
+        if rp.returncode != 0:
+            sys.exit("✗ 公众号贴图失败，看上面的报错和 publish/logs/ 里的截图")
+        return
+
     if args.schedule:
-        if args.platform == "wechat":
-            digest = re.sub(r"\s+", " ", body).strip()[:120]
-            cmdp = [
-                PY, str(BASE / "publish" / "wechat_publish.py"),
-                "--images", str(out_dir),
-                "--title", title,
-                "--digest", digest,
-                "--author", cfg.get("author", "署名"),
-                "--schedule", schedule_time,
-            ]
-            if args.dry_run:
-                cmdp.append("--dry-run")
-            print(f"\n▶ 公众号定时发表（{schedule_time}）…")
-            rp = subprocess.run(cmdp, text=True)
-            if rp.returncode != 0:
-                sys.exit("✗ 公众号发布失败，看上面的报错和 publish/logs/ 里的截图")
-            return
         cmdp = [
             PY, str(PUBLISH_EGO if args.browser == "ego" else PUBLISH),
             "--meta", str(out_dir / "meta.json"),
