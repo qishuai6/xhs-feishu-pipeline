@@ -315,15 +315,86 @@ def title_size(title):
     return 68, 1.4
 
 
+MAX_MAIN_FS = 150          # 封面主标题字号上限
+MAIN_LINE_H = 1.22         # 大字号折行时的紧凑行高
+
+
+PUNCT = "，。：、！？；,%）】》」‘’"
+LATIN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.:%±]*|.", re.S)
+
+
+def _tokens(title):
+    """切成原子 token：连续拉丁/数字串（ETF、6.49%、41%）不可切开。
+    每个 token 记 (文本, 显示宽度)：拉丁/数字按 0.6 汉字宽折算。"""
+    out = []
+    for m in LATIN_RE.finditer(title):
+        s = m.group(0)
+        w = len(s) * (0.6 if s[0].isascii() and not s[0].isspace() else 1.0)
+        out.append([s, w])
+    return out
+
+
+def split_title_lines(title):
+    """主标题折行：原子 token 不切开（ETF/6.49% 保持完整），标点断行优先，
+    行宽按真实显示宽度均衡，字号尽量大（≤150px），最多 3 行。"""
+    toks = _tokens(title or "标题")
+    n = len(toks)
+    total_w = sum(w for _, w in toks)
+    rows = max(1, min(3, -(-int(total_w) // 6)))   # 按宽度折算行数
+    target = total_w / rows
+
+    def widths_of(cuts):
+        ws, acc = [], 0.0
+        for i, (_, w) in enumerate(toks):
+            acc += w
+            if i in cuts or i == n - 1:
+                ws.append(acc); acc = 0.0
+        return ws
+
+    def cost(cuts):
+        ws = widths_of(cuts)
+        c = sum((x - target) ** 2 for x in ws) * 10
+        c += (max(ws) - min(ws)) ** 2 * 8
+        for i in cuts:                       # cuts[i]=在第 i 个 token 后断行
+            if toks[i][0][-1] in PUNCT:      # 断在标点后：好
+                c -= 60
+            if i + 1 < n and toks[i + 1][0][0] in PUNCT:  # 行首标点：差
+                c += 200
+        return c
+
+    best_cuts, best_cost = None, None
+    import itertools
+    for cuts in itertools.combinations(range(n - 1), rows - 1):
+        c = cost(cuts)                        # 组合数 ≤C(19,2)≈171，全量算分
+        if best_cost is None or c < best_cost:
+            best_cuts, best_cost = cuts, c
+    if best_cuts is None:                    # 兜底：按 token 均衡切
+        base, extra = n // rows, n % rows
+        best_cuts, i = [], 0
+        for k in range(rows - 1):
+            i += base + (1 if k < extra else 0)
+            best_cuts = best_cuts + (i - 1,)
+    # 组装行与字号
+    lines, cur = [], ""
+    for i, (s, _) in enumerate(toks):
+        cur += s
+        if i in best_cuts or i == n - 1:
+            lines.append(cur); cur = ""
+    widest = max(widths_of(best_cuts))
+    fs = min(MAX_MAIN_FS, int(CONTENT_W / widest * 0.94))
+    return lines, fs
+
+
 def cover_html(st, title, lead, kicker, author, css):
     lines = [l for l in title.split("\n") if l.strip()]
-    n0 = len(lines[0]) if lines else 0
-    # 封面主标题：信息流里要一眼读清，整体调大一档（短标题拉满到 120px）
-    main = 120 if n0 <= 6 else 108 if n0 <= 8 else 96 if n0 <= 10 else 84 if n0 <= 13 else 68
     parts = []
     for i, l in enumerate(lines):
         if i == 0:
-            parts.append(f'<div class="t-main" style="font-size:{main}px">{md_to_html(l)}</div>')
+            # 主标题：大字号 + 自动均衡折行（一行放不下就折，字号不缩）
+            tl, main = split_title_lines(l)
+            for seg in tl:
+                parts.append(f'<div class="t-main" style="font-size:{main}px;line-height:{MAIN_LINE_H}">'
+                             f'{md_to_html(seg)}</div>')
         else:
             fs = max(40, min(54, int(CONTENT_W / max(len(l), 1) * 0.96)))
             parts.append(f'<div class="t-sub" style="font-size:{fs}px">{md_to_html(l)}</div>')
