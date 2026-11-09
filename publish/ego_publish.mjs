@@ -181,6 +181,7 @@ async function getPublishButtons(page) {
     const dis = (n.properties || []).find((p) => p.name === "disabled");
     btns.push({
       text, disabled: !!(dis && dis.value && dis.value.value),
+      id: n.backendDOMNodeId,
       x: xs.reduce((a, b) => a + b, 0) / 4, y: ys.reduce((a, b) => a + b, 0) / 4,
       w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys),
     });
@@ -198,11 +199,28 @@ async function safeShadowClick(page, target, purpose, allowSubmit) {
     clicks.push({ purpose, text: target.text, allow_submit: false, blocked: true });
     throw new Error(`安全闸门拦截：${CONFIG.mode} 模式试图点击疑似发布按钮「${target.text}」（${purpose}），已停止`);
   }
+  // 回顶（底部按钮栏随页面滚动移位，必须在点击时重取实时坐标）
   await page.evaluate(scrollTop);
   await sleep(300);
-  await page.mouse.move(target.x, target.y);
+  let x = target.x, y = target.y;
+  // 1) 用 backendNodeId 重取实时 box（旧坐标可能是页面滚动前算的，吸底元素会移位）
+  if (target.id) {
+    const box = await page.cdp("DOM.getBoxModel", { backendNodeId: target.id }).catch(() => null);
+    if (box && box.model && box.model.border) {
+      const q = box.model.border;
+      const xs = [q[0], q[2], q[4], q[6]], ys = [q[1], q[3], q[5], q[7]];
+      x = xs.reduce((a, b) => a + b, 0) / 4;
+      y = ys.reduce((a, b) => a + b, 0) / 4;
+    }
+  }
+  // 2) 视口外补偿：fixed 吸底按钮的文档坐标 = 视口坐标 + scrollY，超出视口就减去 scrollY
+  const vp = await page.evaluate(() => ({ sy: window.scrollY, vh: innerHeight })).catch(() => ({ sy: 0, vh: 900 }));
+  if (y > vp.vh - 8) y -= vp.sy;
+  ev("click-pos", { purpose, x: Math.round(x), y: Math.round(y), rawY: Math.round(target.y), sy: vp.sy, vh: vp.vh });
+  // 3) 真实鼠标点击
+  await page.mouse.move(x, y);
   await sleep(200);
-  await page.mouse.click(target.x, target.y, { label: purpose });
+  await page.mouse.click(x, y, { label: purpose });
   clicks.push({ purpose, text: target.text, allow_submit: !!allowSubmit });
   ev("click", { purpose, text: target.text, allow_submit: !!allowSubmit });
 }
@@ -399,17 +417,118 @@ async function main() {
       await page.waitForSelector(".date-picker-container input.d-text", { state: "visible", timeout: 10000 });
       const readback0 = await page.evaluate(inputSelValue, ".date-picker-container input.d-text").catch(() => "");
       await page.click(".date-picker-container input.d-text");
-      await sleep(600);
-      await page.fill(".date-picker-container input.d-text", CONFIG.schedule);
-      await sleep(600);
-      await page.keyboard.press("Enter"); await sleep(1000);
-      await page.keyboard.press("Escape"); await sleep(500);
-      const readback = await page.evaluate(inputSelValue, ".date-picker-container input.d-text").catch(() => "");
-      scheduleInfo = { target: CONFIG.schedule, readback, default: readback0 };
-      ev("schedule", scheduleInfo);
-      if (readback.trim() !== CONFIG.schedule) {
-        throw Object.assign(
-          new Error(`平台没有接受定时时间：期望 ${CONFIG.schedule}，回读 ${readback}`), { step: "schedule-verify" });
+      await sleep(1000);
+      // 原生点选面板（AX 穿透 shadow，面板可能不在普通 DOM）：面板头「2026年」定位 → 日/时/分 cell → 真实点击
+      const day = String(parseInt(CONFIG.schedule.slice(8, 10), 10));
+      const hh = CONFIG.schedule.slice(11, 13), mm = CONFIG.schedule.slice(14, 16);
+      const findPanelCells = async () => {
+        const want = new Set([day, hh, mm, "确定", "完成"]);
+        const ax = await page.cdp("Accessibility.getFullAXTree").catch(() => null);
+        const nodes = (ax && ax.nodes) || [];
+        const hits = [];
+        let head = null;
+        for (const n of nodes) {
+          const name = String((n.name && n.name.value) || "").trim();
+          if (!name || !n.backendDOMNodeId) continue;
+          const isHead = /20\d\d年/.test(name) && name.length <= 12;
+          if (!isHead && !want.has(name)) continue;
+          let box;
+          try { box = await page.cdp("DOM.getBoxModel", { backendNodeId: n.backendDOMNodeId }); } catch { continue; }
+          if (!box || !box.model) continue;
+          const q = box.model.border;
+          const xs = [q[0], q[2], q[4], q[6]], ys = [q[1], q[3], q[5], q[7]];
+          const b = { name, x: xs.reduce((a, c) => a + c, 0) / 4, y: ys.reduce((a, c) => a + c, 0) / 4,
+                      w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+          if (isHead) { if (!head && b.w > 40 && b.w < 420 && b.h > 8 && b.h < 90) head = b; continue; }
+          if (b.w < 12 || b.w > 95 || b.h < 8 || b.h > 75) continue;
+          hits.push(b);
+        }
+        if (!head) return null;
+        const px = head.x - head.w / 2 - 80, pw = 470;   // 「2026年」左侧还有翻页箭头，面板真实左缘约再往左 80px（实测）
+        const rel = (b) => (b.x - px) / pw;
+        const near = (b) => Math.abs(b.y - head.y) < 330;
+        const pickSide = (txt, lo, hi, best) => {
+          const c = hits.filter((b) => b.name === txt && near(b) && rel(b) >= lo && rel(b) <= hi);
+          if (!c.length) return null;
+          return best === "max" ? c.reduce((a, b) => (a.x >= b.x ? a : b)) : c.reduce((a, b) => (a.x <= b.x ? a : b));
+        };
+        return {
+          head, day: pickSide(day, -0.05, 0.6, "min") || pickSide(String(parseInt(day, 10)), -0.05, 0.6, "min"),
+          hour: pickSide(hh, 0.55, 0.85, "min"), min: pickSide(mm, 0.75, 1.3, "max"),
+          anyMin: (() => {
+            const c = hits.filter((b) => /^\d{2}$/.test(b.name) && near(b) && rel(b) >= 0.78 && rel(b) <= 1.25
+                          && Math.abs(b.y - (head.y + 150)) < 160);
+            return c.length ? c.reduce((a, b) => (Math.abs(a.y - (head.y + 150)) <= Math.abs(b.y - (head.y + 150)) ? a : b)) : null;
+          })(),
+          ok: (() => { const c = hits.filter((b) => /^(确定|完成)$/.test(b.name) && rel(b) > 0 && rel(b) < 1.3); return c.length ? c[0] : null; })(),
+        };
+      };
+      let cells = await findPanelCells();
+      for (let i = 0; i < 4 && !(cells && cells.day); i++) {
+        // 面板没开/没找到：再点一次输入框唤起
+        ev("panel-retry", { n: i });
+        try { await page.click(".date-picker-container input.d-text"); } catch {}
+        await sleep(900);
+        cells = await findPanelCells();
+      }
+      ev("panel-cells", cells ? { day: !!cells.day, hour: !!cells.hour, min: !!cells.min, ok: !!cells.ok, head: cells.head } : null);
+      if (cells && cells.day) {
+        await page.mouse.click(cells.day.x, cells.day.y); await sleep(600);
+        let c2 = await findPanelCells();
+        if (c2 && c2.hour) { await page.mouse.click(c2.hour.x, c2.hour.y); await sleep(400); }
+        let minC = c2 && c2.min;
+        for (let i = 0; i < 6 && !minC; i++) {
+          // 分列里暂时没有目标分：鼠标移到分列上滚轮向上找（尽力凑准点，找不到就用面板当前分）
+          const px2 = cells.head.x - cells.head.w / 2 - 80;
+          await page.mouse.move(px2 + 0.865 * 470, cells.head.y + 150);
+          await page.mouse.wheel(0, -140); await sleep(350);
+          const again = await findPanelCells();
+          if (again && again.head) cells.head = again.head;
+          minC = again && again.min;
+        }
+        if (minC) { await page.mouse.click(minC.x, minC.y); await sleep(500); }
+        else if (c2 && c2.anyMin) {
+          // 精确分钟够不着：点分列里当前可见的格子（=当前分钟），让面板时间完整
+          await page.mouse.click(c2.anyMin.x, c2.anyMin.y); await sleep(500);
+          ev("min-fallback", { x: Math.round(c2.anyMin.x), y: Math.round(c2.anyMin.y) });
+        }
+        const c3 = await findPanelCells();
+        if (c3 && c3.ok) { await page.mouse.click(c3.ok.x, c3.ok.y); await sleep(700); }
+      }
+      // 关面板：必须连续两次 AX 扫描都找不到面板头才算关上（单次扫描会假阴性）；
+      // 面板开着时，提交点击只会把面板关掉、按不到按钮
+      let panelClosed = false;
+      for (let i = 0; i < 8 && !panelClosed; i++) {
+        const chk1 = await findPanelCells();
+        if (chk1) {
+          await page.keyboard.press("Escape"); await sleep(400);
+          const s = [[400, 130], [300, 300], [1250, 200]][i % 3];
+          await page.mouse.click(s[0], s[1]); await sleep(700);
+          continue;
+        }
+        const chk2 = await findPanelCells();
+        panelClosed = !chk2;
+      }
+      ev("panel-closed", { closed: panelClosed });
+      let readback = await page.evaluate(inputSelValue, ".date-picker-container input.d-text").catch(() => "");
+      // 原生路径：日期+小时对了就算数（分钟允许是面板当前值，如 08:27）
+      const looseRe = new RegExp(`^${CONFIG.schedule.slice(0, 10)} ${hh}:\\d\\d$`);
+      if (cells && cells.day && looseRe.test(readback.trim())) {
+        scheduleInfo = { target: CONFIG.schedule, readback, default: readback0, native: true };
+        ev("schedule", scheduleInfo);
+      } else {
+        if (readback.trim() !== CONFIG.schedule) {
+          await page.fill(".date-picker-container input.d-text", CONFIG.schedule);
+          await sleep(600);
+          await page.keyboard.press("Enter"); await sleep(1000);
+          readback = await page.evaluate(inputSelValue, ".date-picker-container input.d-text").catch(() => "");
+        }
+        scheduleInfo = { target: CONFIG.schedule, readback, default: readback0, native: false };
+        ev("schedule", scheduleInfo);
+        if (readback.trim() !== CONFIG.schedule) {
+          throw Object.assign(
+            new Error(`平台没有接受定时时间：期望 ${CONFIG.schedule}，回读 ${readback}`), { step: "schedule-verify" });
+        }
       }
       await stepShot(page, "07-schedule");
     }
@@ -423,7 +542,7 @@ async function main() {
     const saveBtn = btns.find((b) => b.text === "暂存离开");
     const submitText = CONFIG.schedule ? "定时发布" : "发布";
     const submitBtn = btns.find((b) => b.text === submitText);
-    ev("buttons", { found: btns.map((b) => b.text), submit: submitBtn ? { x: submitBtn.x, y: submitBtn.y } : null });
+    ev("buttons", { found: btns.map((b) => ({ t: b.text, d: b.disabled })), submit: submitBtn ? { x: submitBtn.x, y: submitBtn.y, d: submitBtn.disabled, id: submitBtn.id } : null });
     result.buttons = { found: btns.map((b) => b.text), has_save: !!saveBtn, has_submit: !!submitBtn };
 
     if (CONFIG.mode === "dry-run") {
@@ -442,10 +561,41 @@ async function main() {
       result.ok = true; result.result = "draft-ok";
     } else if (CONFIG.mode === "schedule") {
       if (!submitBtn) throw Object.assign(new Error(`找不到「${submitText}」按钮`), { step: "publish-scheduled" });
+      // 点击「定时发布」（safeShadowClick 内含实时坐标重取，吸底按钮滚动后不再点空）
       await safeShadowClick(page, submitBtn, "定时发布", true);
       await sleep(2500);
-      for (const t of ["确认定时发布", "确认发布", "确定发布", "确定", "确认"]) {
-        try { await page.click(`text="${t}"`, { timeout: 1500 }); await sleep(2000); break; } catch {}
+      // 平台拒绝检测：错误 toast（如「正文最多支持1000字」）会短暂出现，抓到就明确报错
+      const errToast = await page.evaluate(() => {
+        const t = (document.body.innerText || "");
+        const m = t.match(/最多支持[^\n]{0,20}|发布失败[^\n]{0,20}|内容不符合[^\n]{0,20}|包含违规[^\n]{0,20}/);
+        return m ? m[0] : null;
+      }).catch(() => null);
+      if (errToast) {
+        await stepShot(page, "platform-reject");
+        throw Object.assign(new Error(`平台拒绝发布：${errToast}（请修改内容后重试）`), { step: "platform-reject" });
+      }
+      // 确认弹层可能在 closed shadow 里（text= 看不见），用 AX 树找「确认*」按钮点掉
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const ax = await page.cdp("Accessibility.getFullAXTree").catch(() => null);
+        const confirmBtn = null;
+        let cbtn = null;
+        for (const n of ((ax && ax.nodes) || [])) {
+          const name = String((n.name && n.name.value) || "").trim();
+          if (/^(确认定时发布|确认发布|确定发布|确定|确认)$/.test(name)
+              && /button/i.test(String((n.role && n.role.value) || "")) && n.backendDOMNodeId) {
+            let box;
+            try { box = await page.cdp("DOM.getBoxModel", { backendNodeId: n.backendDOMNodeId }); } catch { continue; }
+            if (!box || !box.model) continue;
+            const q = box.model.border;
+            const xs = [q[0], q[2], q[4], q[6]], ys = [q[1], q[3], q[5], q[7]];
+            cbtn = { text: name, id: n.backendDOMNodeId,
+                     x: xs.reduce((a, b) => a + b, 0) / 4, y: ys.reduce((a, b) => a + b, 0) / 4 };
+            break;
+          }
+        }
+        if (!cbtn) break;
+        await safeShadowClick(page, cbtn, "定时确认弹层", true);
+        await sleep(2500);
       }
       await stepShot(page, "08-published");
 
@@ -473,7 +623,7 @@ async function main() {
       } catch (e) { verify.error = String(e); }
       result.verify = verify;
       result.ok = verify.found;
-      result.result = verify.found ? "scheduled" : "scheduled-unverified";
+
     } else if (CONFIG.mode === "publish") {
       if (!submitBtn) throw Object.assign(new Error("找不到「发布」按钮"), { step: "publish" });
       await safeShadowClick(page, submitBtn, "立即发布", true);

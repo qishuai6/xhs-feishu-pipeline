@@ -33,6 +33,16 @@ LOGS_DIR = PUBLISH_DIR / "logs"
 RUN_TIMEOUT = 15 * 60
 
 
+import re as _re
+
+
+def platform_len(text):
+    """平台字数口径：UTF-16 单元 + 组合 emoji 序号（1️⃣ = 数字+FE0F+20E3，平台多算 2）。"""
+    body = text or ""
+    combos = len(_re.findall(r"[0-9]\uFE0F?\u20E3", body))
+    return len(body) + combos * 2
+
+
 def build_config(args):
     script_dir = str(PUBLISH_DIR)
     meta = load_meta(args.meta, script_dir) if args.meta else {}
@@ -48,6 +58,10 @@ def build_config(args):
     if not title:
         raise SystemExit("❌ 必须给 --title（或 --meta 里带 title）")
     body = read_body(args.body, script_dir) or (meta.get("body") or "")
+    if platform_len(body) > 980:
+        raise SystemExit(
+            "❌ 正文超长：平台口径 %d 字（上限 1000，含空格与 emoji 计数），请压缩到 980 以内再发。\n"
+            "   小红书正文平台按 UTF-16+组合emoji 计数，与肉眼字数不同。" % platform_len(body))
     tags = normalize_tags(args.tags) or normalize_tags(meta.get("tags"))
 
     schedule_dt = parse_schedule(args.schedule) if args.schedule else None
