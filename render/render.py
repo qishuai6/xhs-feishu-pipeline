@@ -48,6 +48,7 @@ STYLES = {
         "font": "'PingFang SC','Hiragino Sans GB','STHeiti',system-ui,sans-serif",
         "title_font": "'PingFang SC','Hiragino Sans GB','STHeiti',sans-serif",
         "fs": 40, "lh": 1.95, "title_weight": 800, "quote_bg": "#F5F4EF",
+        "tbl_head": "rgba(27,27,27,0.06)",
     },
     "magazine": {
         "bg": "#F6F1E6", "fg": "#22201C", "muted": "#8A8073", "line": "#D8CFBC",
@@ -55,6 +56,7 @@ STYLES = {
         "font": "'PingFang SC','Hiragino Sans GB','STHeiti',system-ui,sans-serif",
         "title_font": "'Songti SC','STSong',serif",
         "fs": 40, "lh": 2.0, "title_weight": 700, "quote_bg": "#EFE7D6",
+        "tbl_head": "rgba(34,32,28,0.07)",
     },
     "dark": {
         "bg": "#141414", "fg": "#EDEBE6", "muted": "#7E7B76", "line": "#2E2C29",
@@ -62,6 +64,7 @@ STYLES = {
         "font": "'PingFang SC','Hiragino Sans GB','STHeiti',system-ui,sans-serif",
         "title_font": "'PingFang SC','Hiragino Sans GB','STHeiti',sans-serif",
         "fs": 40, "lh": 1.95, "title_weight": 700, "quote_bg": "#1F1E1C",
+        "tbl_head": "rgba(237,235,230,0.10)",
     },
     # 深色卡片风：整篇统一一个深色底，颜色在笔记之间轮换（001 蓝→002 绿→003 红→004 黑）
     "card": {
@@ -72,6 +75,7 @@ STYLES = {
         "font": "'Songti SC','Noto Serif SC','STSong',serif",
         "title_font": "'Songti SC','Noto Serif SC','STSong',serif",
         "fs": 40, "lh": 2.0, "title_weight": 700, "quote_bg": "rgba(255,255,255,0.07)",
+        "tbl_head": "rgba(240,236,223,0.10)",
         "bg_cycle": ["#2B3D6E", "#2E4A3D", "#682A34", "#1E1D1B"],  # 蓝/绿/红/黑
     },
 }
@@ -93,6 +97,13 @@ html,body{width:${W}px;height:${H}px;overflow:hidden}
 quote-block{display:block}
 .q{background:$quote_bg;border-left:5px solid $accent;padding:30px 34px;margin:8px 0 34px;
    font-size:${fs_q}px;line-height:1.85;color:$fg}
+.tbl{width:100%;border-collapse:collapse;margin:10px 0 34px;font-size:${fs_tbl}px;
+     line-height:1.5;letter-spacing:.01em}
+.tbl th{background:$tbl_head;color:$fg;font-weight:700;text-align:left;padding:16px 18px;
+        border-bottom:2px solid $line}
+.tbl td{color:$fg;padding:14px 18px;border-bottom:1px solid $line;vertical-align:top}
+.tbl tr:last-child td{border-bottom:none}
+.tbl td:first-child,.tbl th:first-child{padding-left:4px}
 .h2{font-size:44px;line-height:1.55;font-weight:700;letter-spacing:-.005em;
    margin:46px 0 28px;padding-left:24px;border-left:7px solid $accent}
 .content>.h2:first-child{margin-top:0}
@@ -182,6 +193,60 @@ def parse_input(raw: str):
     return "\n".join(title_parts).strip(), lead, blocks
 
 
+_TABLE_ROW = re.compile(r"^\|(.+)\|\s*$")
+_TABLE_SEP = re.compile(r"^\|[\s:|-]+\|\s*$")
+
+
+def _rows_from(lines):
+    rows = []
+    for l in lines:
+        l = l.strip()
+        if not l or _TABLE_SEP.match(l):
+            continue
+        cells = [c.strip() for c in _TABLE_ROW.match(l).group(1).split("|")]
+        rows.append(cells)
+    return rows
+
+
+def parse_tables(blocks):
+    """把段落块里的表格行（即使与正文紧贴）提取成 table 块：rows=[[c,...],...]，首行为表头。"""
+    out = []
+    for kind, text in blocks:
+        if kind != "p" or "|" not in text:
+            out.append((kind, text))
+            continue
+        lines = text.split("\n")
+        is_tbl = [bool(_TABLE_ROW.match(l) or _TABLE_SEP.match(l)) for l in lines if l.strip()]
+        if not any(is_tbl):
+            out.append((kind, text))
+            continue
+        # 行级拆分：收集连续表格行段；与正文混排时各自成块
+        cur_text, cur_tbl, flushed = [], [], False
+        for l in lines:
+            if _TABLE_ROW.match(l) or _TABLE_SEP.match(l):
+                flushed = False
+                cur_tbl.append(l)
+            else:
+                if cur_tbl:
+                    rows = _rows_from(cur_tbl)
+                    if len(rows) >= 2:
+                        out.append(("table", rows))
+                    else:
+                        cur_text.extend(cur_tbl)
+                    cur_tbl = []
+                cur_text.append(l)
+        if cur_tbl:
+            rows = _rows_from(cur_tbl)
+            if len(rows) >= 2:
+                out.append(("table", rows))
+            else:
+                cur_text.extend(cur_tbl)
+        rest = [x for x in cur_text if x.strip()]
+        if rest:
+            out.append(("p", "\n".join(rest)))
+    return out
+
+
 SENT_SPLIT = re.compile(r"(?<=[。！？!?；;])")
 
 
@@ -193,6 +258,13 @@ def to_units(blocks):
         if kind in ("list", "q", "h2"):
             pid += 1
             units.append((kind, text, f"s{pid}"))
+            continue
+        if kind == "table":
+            header, rows = text[0], text[1:]
+            CHUNK = 10                     # 每块最多 10 行数据，超高表格自动分块跨页
+            for k in range(0, len(rows), CHUNK):
+                pid += 1
+                units.append(("table", [header] + rows[k:k + CHUNK], f"s{pid}"))
             continue
         for para in text.split("\n"):
             para = para.strip()
@@ -212,6 +284,11 @@ def unit_html(kind, text):
         return f'<div class="q">{md_to_html(text)}</div>'
     if kind == "h2":
         return f'<div class="h2">{md_to_html(text)}</div>'
+    if kind == "table":
+        header, rows = text[0], text[1:]
+        th = "".join(f"<th>{md_to_html(c)}</th>" for c in header)
+        trs = "".join("<tr>" + "".join(f"<td>{md_to_html(c)}</td>" for c in r) + "</tr>" for r in rows)
+        return f'<table class="tbl"><thead><tr>{th}</tr></thead><tbody>{trs}</tbody></table>'
     return f'<div class="p">{md_to_html(text)}</div>'
 
 
@@ -278,7 +355,8 @@ def css_for(style_key, fs_override=None, bg_override=None):
         bg=bg_override or st["bg"], fg=st["fg"], muted=st["muted"], line=st["line"],
         accent=st["accent"], hl=st["hl"], font=st["font"], title_font=st["title_font"],
         quote_bg=st["quote_bg"],
-        fs=fs, fs_q=fs - 2, lh=st["lh"], tw=st["title_weight"],
+        tbl_head=st.get("tbl_head", "rgba(0,0,0,0.05)"),
+        fs=fs, fs_q=fs - 2, fs_tbl=fs - 7, lh=st["lh"], tw=st["title_weight"],
         title_fs=title_size("")[0],
     )
 
@@ -448,6 +526,7 @@ def main():
 
     raw = Path(args.input).read_text(encoding="utf-8")
     title, lead, blocks = parse_input(raw)
+    blocks = parse_tables(blocks)
     title = args.title or title or "无标题"
     lead = args.lead or lead
     units = to_units(blocks)
