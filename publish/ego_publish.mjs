@@ -119,24 +119,34 @@ const findNoteCard = (title) => {
   const titles = Array.from(document.querySelectorAll('.note-card__title'));
   for (const el of titles) {
     if (norm(el.innerText).includes(t)) {
-      let card = el.parentElement, time = '', rawTime = '';
+      let card = el.parentElement, time = '';
       for (let i = 0; i < 6 && card && card !== document.body; i++) {
         const te = card.querySelector('.note-card__time');
-        if (te) { rawTime = (te.innerText || '').trim(); break; }
+        if (te) { time = (te.innerText || '').trim(); break; }
         card = card.parentElement;
       }
-      // 卡片原文里「定时发布于 YYYY-MM-DD HH:MM」才是定时时间；裸时间戳是发布/提交时刻，别再抓错
-      const cardTxt = (card && card.innerText || '');
-      const m = cardTxt.match(/定时发布于?\s*([0-9]{4}-[0-9]{2}-[0-9]{2}\s*[0-9]{2}:[0-9]{2})/) ||
-                 cardTxt.match(/将于\s*([0-9]{4}-[0-9]{2}-[0-9]{2}\s*[0-9]{2}:[0-9]{2})/);
-      time = m ? m[1].replace(/\s+/, ' ') : rawTime;
-      return { found: true, matched: el.innerText.trim(), time, scheduled: !!m };
+      return { found: true, matched: el.innerText.trim(), time };
     }
   }
   return { found: false, total: titles.length };
 };
 
 const scrollTop = () => window.scrollTo(0, 0);
+
+// 日期输入框可能存在隐藏测量副本（waitForSelector 命中可见的、click 却抓到隐藏的），
+// 按标记法锁定视口内可见的那一个（同 findTitleInput 思路，2026-11-14 实测踩坑）
+const markDatePicker = () => {
+  document.querySelectorAll('[data-xhs-dt]').forEach((e) => e.removeAttribute('data-xhs-dt'));
+  const cands = Array.from(document.querySelectorAll('.date-picker-container input.d-text'));
+  for (const el of cands) {
+    const r = el.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < innerHeight) {
+      el.setAttribute('data-xhs-dt', '1');
+      return { ready: true, n: cands.length };
+    }
+  }
+  return { ready: false, n: cands.length };
+};
 const inputSelValue = (sel) => { const el = document.querySelector(sel); return el ? el.value : ""; };
 const findTitleInput = () => {
   document.querySelectorAll('[data-xhs-title]').forEach((e) => e.removeAttribute('data-xhs-title'));
@@ -199,54 +209,6 @@ async function getPublishButtons(page) {
 
 const clicks = [];
 
-// ---------- 通用弹框清扫（发布页随时插运营弹框：选择路线/Red Skill/直播预告/活动推荐…） ----------
-// 安全策略：引导类弹框 → 点安全关闭词（×/关闭/我知道了/暂不…），点不到不硬来；
-//          业务确认弹框（含 发布/定时发布/暂存离开 按钮）→ 绝不自动处理，留给主流程。
-const findDialogClose = () => {
-  const KEEP = /^(确认定时发布|确认发布|确定发布|定时发布|发布|立即发布|暂存离开|暂存并离开)$/;
-  const clues = [/modal/i, /dialog/i, /popup/i, /drawer/i, /guide/i, /overlay/i, /mask/i];
-  const isDialogish = (el) => {
-    for (let n = el; n && n !== document.body; n = n.parentElement) {
-      const cls = String(n.className || "");
-      if (typeof cls === "string" && clues.some((r) => r.test(cls))) return true;
-    }
-    return false;
-  };
-  const SAFE = ["×", "✕", "x", "X", "关闭", "我知道了", "知道了", "暂不", "稍后", "跳过", "不再提示", "不再显示"];
-  const cands = [];
-  document.querySelectorAll("button, a, div, span, i").forEach((el) => {
-    const r = el.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0 || r.width > 260 || r.height > 120) return;
-    const t = (el.innerText || el.getAttribute("aria-label") || "").trim();
-    if (!t || t.length > 8 || !SAFE.includes(t)) return;
-    if (!isDialogish(el)) return;
-    if (r.y < 60) return;                       // 顶部固定栏的「关闭」不是弹框的
-    cands.push({ x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), text: t });
-  });
-  let keep = false;
-  document.querySelectorAll("button, a").forEach((el) => {
-    const t = (el.innerText || "").trim();
-    if (KEEP.test(t) && el.getBoundingClientRect().width > 0 && isDialogish(el)) keep = true;
-  });
-  return { keep, close: cands[0] || null, count: cands.length };
-};
-
-async function dismissDialogs(page, tag = "") {
-  let closed = 0;
-  for (let round = 0; round < 3; round++) {      // 可能叠多层弹框
-    const st = await page.evaluate(findDialogClose).catch(() => null);
-    if (!st || st.keep || !st.close) break;
-    try {
-      await page.mouse.click(st.close.x, st.close.y);
-      closed += 1;
-      ev("dialog-dismissed", { tag, text: st.close.text, round });
-      await sleep(800);
-    } catch { break; }
-  }
-  if (closed > 0) await stepShot(page, "dialog-cleared-" + (tag || "x"));
-  return closed;
-}
-
 async function safeShadowClick(page, target, purpose, allowSubmit) {
   if (!allowSubmit && SUBMIT_TEXT_RE.test(target.text)) {
     clicks.push({ purpose, text: target.text, allow_submit: false, blocked: true });
@@ -271,19 +233,6 @@ async function safeShadowClick(page, target, purpose, allowSubmit) {
   if (y > vp.vh - 8) y -= vp.sy;
   ev("click-pos", { purpose, x: Math.round(x), y: Math.round(y), rawY: Math.round(target.y), sy: vp.sy, vh: vp.vh });
   // 3) 真实鼠标点击
-  // 2.5) 点击点若被「无文本、大面积」透明遮罩盖住（日期面板关闭后的残留 mask），中和之
-  const blk = await page.evaluate(({ x, y }) => {
-    const el = document.elementFromPoint(x, y);
-    if (!el) return { clear: true };
-    const host = document.querySelector("xhs-publish-btn");
-    if (host && (el === host || host.contains(el))) return { clear: true };
-    const r = el.getBoundingClientRect();
-    const txt = (el.innerText || "").trim();
-    if (txt.length > 0 || r.width * r.height < innerWidth * innerHeight * 0.3) return { clear: false, kept: true };
-    el.style.pointerEvents = "none";
-    return { clear: false, neutralized: el.tagName + "." + String(el.className).slice(0, 40) };
-  }, { x, y }).catch(() => ({ clear: true }));
-  ev("blocker-check", { purpose, ...blk });
   await page.mouse.move(x, y);
   await sleep(200);
   await page.mouse.click(x, y, { label: purpose });
@@ -385,9 +334,10 @@ async function main() {
       await sleep(1000);
     }
     await stepShot(page, "04-uploaded");
-    await dismissDialogs(page, "after-upload");
+    for (const t of ["我知道了", "知道了", "关闭"]) {
+      try { await page.click(`text="${t}"`, { timeout: 1500 }); await sleep(600); break; } catch {}
+    }
 
-    await dismissDialogs(page, "before-title");
     // 4. 标题（页面有多个 input，用 JS 标记法锁定唯一目标，避免选择器歧义）
     let tInfo = { ready: false };
     for (let i = 0; i < 25 && !tInfo.ready; i++) {
@@ -404,7 +354,6 @@ async function main() {
     }
     ev("title", { value: titleVal, len: titleVal.length });
 
-    await dismissDialogs(page, "before-body");
     // 5. 正文
     const ed = await page.evaluate(findEditor).catch(() => ({ ready: false }));
     if (!ed.ready) throw Object.assign(new Error("找不到正文编辑器"), { step: "body" });
@@ -428,16 +377,9 @@ async function main() {
     ev("body", { expect, got });
     await stepShot(page, "05-body");
 
-    await dismissDialogs(page, "before-tags");
     // 6. 话题
     const picked = [], missed = [];
     if (CONFIG.tags.length) {
-      // 长内容（多图+长文）会把编辑器顶出视口，click 前先滚回可视区
-      await page.evaluate(() => {
-        const el = document.querySelector('[data-xhs-editor="1"]');
-        if (el) el.scrollIntoView({ block: "center" });
-      }).catch(() => {});
-      await sleep(400);
       await page.click('[data-xhs-editor="1"]');
       await page.keyboard.press("Meta+ArrowDown");
       await sleep(500);
@@ -480,22 +422,45 @@ async function main() {
     }
     result.tags = { picked, missed };
 
-    await dismissDialogs(page, "before-schedule");
     // 7. 定时发布
     let scheduleInfo = null;
     if (CONFIG.schedule) {
+      // 多图上传后页面变长，「定时发布」开关沉到视口外，ego 的可见性检查会挂——
+      // scrollTo/scrollIntoView 在 ego 页面里不生效（scrollY 恒 0），只能滚轮送到底
+      await page.mouse.wheel(0, 4000, { label: "滚到定时设置区" });
+      await sleep(900);
+      await page.mouse.wheel(0, 2000, { label: "确认滚到底" });
+      await sleep(700);
       await page.waitForSelector(".post-time-wrapper", { state: "visible", timeout: 10000 });
       const switched = await page.evaluate(clickScheduleSwitch).catch(() => ({ ok: false }));
       if (!switched.ok) throw Object.assign(new Error("找不到「定时发布」开关"), { step: "schedule" });
       await sleep(1500);
       await page.waitForSelector(".date-picker-container input.d-text", { state: "visible", timeout: 10000 });
       const readback0 = await page.evaluate(inputSelValue, ".date-picker-container input.d-text").catch(() => "");
-      await page.evaluate(() => {
-        const el = document.querySelector(".date-picker-container input.d-text");
-        if (el) el.scrollIntoView({ block: "center" });
-      }).catch(() => {});
-      await sleep(400);
-      await page.click(".date-picker-container input.d-text");
+      const dtMarked = await page.evaluate(markDatePicker).catch(() => ({ ready: false }));
+      ev("dt-mark", dtMarked);
+      if (dtMarked.ready) {
+        await page.click('[data-xhs-dt="1"]');
+      } else {
+        // input 视口判定不可见（隐藏受控输入或未滚到位）：带出 rect 诊断，
+        // 改用真实鼠标坐标点「定时时间」可见区域（绕开 ego 的元素可见性判定）
+        const pt = await page.evaluate(() => {
+          const c = document.querySelector('.date-picker-container') || document.querySelector('.post-time-wrapper');
+          const inp = document.querySelector('.date-picker-container input.d-text');
+          const ri = inp ? inp.getBoundingClientRect() : null;
+          if (!c) return null;
+          const r = c.getBoundingClientRect();
+          return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + Math.min(r.height / 2, 40)),
+                   top: Math.round(r.top), bottom: Math.round(r.bottom), vh: innerHeight,
+                   input: ri ? { w: Math.round(ri.width), h: Math.round(ri.height), top: Math.round(ri.top) } : null };
+        }).catch(() => null);
+        ev("dt-coord", pt);
+        if (pt && pt.top >= 0 && pt.bottom <= pt.vh + 2) {
+          await page.mouse.move(pt.x, pt.y);
+          await sleep(200);
+          await page.mouse.click(pt.x, pt.y, { label: "点定时时间框" });
+        }
+      }
       await sleep(1000);
       // 原生点选面板（AX 穿透 shadow，面板可能不在普通 DOM）：面板头「2026年」定位 → 日/时/分 cell → 真实点击
       const day = String(parseInt(CONFIG.schedule.slice(8, 10), 10));
@@ -523,51 +488,30 @@ async function main() {
           hits.push(b);
         }
         if (!head) return null;
-        // 自适应分簇：收集面板头下方的小数字格，按 x 三等分识别 日/时/分 列（不依赖硬编码视口几何）
-        const nums = [];
-        for (const n of nodes) {
-          const t = String((n.name && n.name.value) || "").trim();
-          if (!/^\d{1,2}$/.test(t) || !n.backendDOMNodeId) continue;
-          let b2;
-          try { b2 = await page.cdp("DOM.getBoxModel", { backendNodeId: n.backendDOMNodeId }); } catch { continue; }
-          if (!b2 || !b2.model) continue;
-          const q2 = b2.model.border;
-          const xs2 = [q2[0], q2[2], q2[4], q2[6]], ys2 = [q2[1], q2[3], q2[5], q2[7]];
-          const cx = xs2.reduce((a, c) => a + c, 0) / 4, cy = ys2.reduce((a, c) => a + c, 0) / 4;
-          if (cy < head.y + 40 || cy > head.y + 420) continue;
-          if (Math.abs(cx - head.x) > 420) continue;
-          const w2 = Math.max(...xs2) - Math.min(...xs2), h2 = Math.max(...ys2) - Math.min(...ys2);
-          if (w2 < 8 || w2 > 95 || h2 < 8 || h2 > 75) continue;
-          nums.push({ t, x: cx, y: cy });
-        }
-        if (!nums.length) return null;
-        const xs3 = nums.map((c) => c.x);
-        const minX = Math.min(...xs3), maxX = Math.max(...xs3);
-        const colW = Math.max((maxX - minX) / 3, 60);
-        const zone = (c) => (c.x < minX + colW ? 0 : c.x < minX + colW * 2 ? 1 : 2);
-        const pick = (txt, z, nearY) => {
-          const c = nums.filter((k) => zone(k) === z && (k.t === txt || k.t === String(parseInt(txt, 10))));
+        const px = head.x - head.w / 2 - 80, pw = 470;   // 「2026年」左侧还有翻页箭头，面板真实左缘约再往左 80px（实测）
+        const rel = (b) => (b.x - px) / pw;
+        const near = (b) => Math.abs(b.y - head.y) < 330;
+        const pickSide = (txt, lo, hi, best) => {
+          const c = hits.filter((b) => b.name === txt && near(b) && rel(b) >= lo && rel(b) <= hi);
           if (!c.length) return null;
-          return nearY !== undefined
-            ? c.reduce((a, b) => (Math.abs(a.y - nearY) <= Math.abs(b.y - nearY) ? a : b))
-            : c[0];
+          return best === "max" ? c.reduce((a, b) => (a.x >= b.x ? a : b)) : c.reduce((a, b) => (a.x <= b.x ? a : b));
         };
-        const midY = head.y + 170;
-        const anyMin = (() => {
-          const c = nums.filter((k) => zone(k) === 2 && k.y > head.y + 40);
-          return c.length ? c.reduce((a, b) => (Math.abs(a.y - midY) <= Math.abs(b.y - midY) ? a : b)) : null;
-        })();
-        const okBtn = (() => {
-          for (const b of hits) if (/^(确定|完成)$/.test(b.name)) return b;
-          return null;
-        })();
-        return { head, day: pick(day, 0), hour: pick(hh, 1), min: pick(mm, 2), anyMin, ok: okBtn };
+        return {
+          head, day: pickSide(day, -0.05, 0.6, "min") || pickSide(String(parseInt(day, 10)), -0.05, 0.6, "min"),
+          hour: pickSide(hh, 0.55, 0.85, "min"), min: pickSide(mm, 0.75, 1.3, "max"),
+          anyMin: (() => {
+            const c = hits.filter((b) => /^\d{2}$/.test(b.name) && near(b) && rel(b) >= 0.78 && rel(b) <= 1.25
+                          && Math.abs(b.y - (head.y + 150)) < 160);
+            return c.length ? c.reduce((a, b) => (Math.abs(a.y - (head.y + 150)) <= Math.abs(b.y - (head.y + 150)) ? a : b)) : null;
+          })(),
+          ok: (() => { const c = hits.filter((b) => /^(确定|完成)$/.test(b.name) && rel(b) > 0 && rel(b) < 1.3); return c.length ? c[0] : null; })(),
+        };
       };
       let cells = await findPanelCells();
       for (let i = 0; i < 4 && !(cells && cells.day); i++) {
         // 面板没开/没找到：再点一次输入框唤起
         ev("panel-retry", { n: i });
-        try { await page.click(".date-picker-container input.d-text"); } catch {}
+        try { await page.click('[data-xhs-dt="1"]'); } catch { try { await page.click(".date-picker-container input.d-text"); } catch {} }
         await sleep(900);
         cells = await findPanelCells();
       }
@@ -587,106 +531,42 @@ async function main() {
           minC = again && again.min;
         }
         if (minC) { await page.mouse.click(minC.x, minC.y); await sleep(500); }
-        else {
-          // 精确分钟够不着：重找一次面板，点分列里当前可见的格子（=当前分钟），让面板时间完整
-          const c2b = await findPanelCells();
-          const am = (c2 && c2.anyMin) || (c2b && c2b.anyMin);
-          ev("min-fallback-try", { stale: !!(c2 && c2.anyMin), fresh: !!(c2b && c2b.anyMin) });
-          if (am) {
-            await page.mouse.click(am.x, am.y); await sleep(500);
-            ev("min-fallback", { x: Math.round(am.x), y: Math.round(am.y) });
-          }
+        else if (c2 && c2.anyMin) {
+          // 精确分钟够不着：点分列里当前可见的格子（=当前分钟），让面板时间完整
+          await page.mouse.click(c2.anyMin.x, c2.anyMin.y); await sleep(500);
+          ev("min-fallback", { x: Math.round(c2.anyMin.x), y: Math.round(c2.anyMin.y) });
         }
         const c3 = await findPanelCells();
         if (c3 && c3.ok) { await page.mouse.click(c3.ok.x, c3.ok.y); await sleep(700); }
       }
-      // 原生点选后立即读输入框，确认点击是否真的提交进了面板状态
-      {
-        const rb = await page.evaluate(inputSelValue, ".date-picker-container input.d-text").catch(() => "");
-        ev("native-readback", { v: rb });
-      }
-      let readback = await page.evaluate(inputSelValue, ".date-picker-container input.d-text").catch(() => "");
-      // 原生路径：日期+小时对了就算数（分钟允许是面板当前值）
-      const looseRe = new RegExp(`^${CONFIG.schedule.slice(0, 10)} ${hh}:\\d\\d$`);
-      const closePanelEsc = async () => {
-        let closed = false;
-        for (let i = 0; i < 5 && !closed; i++) {
-          const chk = await findPanelCells();
-          if (!chk) { closed = true; break; }
-          await page.keyboard.press("Tab"); await sleep(150);
-          await page.keyboard.press("Escape"); await sleep(500);
+      // 关面板：必须连续两次 AX 扫描都找不到面板头才算关上（单次扫描会假阴性）；
+      // 面板开着时，提交点击只会把面板关掉、按不到按钮
+      let panelClosed = false;
+      for (let i = 0; i < 8 && !panelClosed; i++) {
+        const chk1 = await findPanelCells();
+        if (chk1) {
+          await page.keyboard.press("Escape"); await sleep(400);
+          const s = [[400, 130], [300, 300], [1250, 200]][i % 3];
+          await page.mouse.click(s[0], s[1]); await sleep(700);
+          continue;
         }
-        return closed;
-      };
+        const chk2 = await findPanelCells();
+        panelClosed = !chk2;
+      }
+      ev("panel-closed", { closed: panelClosed });
+      let readback = await page.evaluate(inputSelValue, ".date-picker-container input.d-text").catch(() => "");
+      // 原生路径：日期+小时对了就算数（分钟允许是面板当前值，如 08:27）
+      const looseRe = new RegExp(`^${CONFIG.schedule.slice(0, 10)} ${hh}:\\d\\d$`);
       if (cells && cells.day && looseRe.test(readback.trim())) {
-        // 原生点选已提交日期+小时：Esc 关面板后走
-        ev("panel-closed", { closed: await closePanelEsc() });
         scheduleInfo = { target: CONFIG.schedule, readback, default: readback0, native: true };
         ev("schedule", scheduleInfo);
       } else {
-        // fill 路径：面板开着 fill 才会提交（面板关着 fill 只改文本 → 变立即发布）
-        // 注意：若原生点选后面板还开着，直接就地 fill，绝不要先关再开（Esc 关掉后面板常唤不醒）
-        let panelOpen = !!(await findPanelCells());
-        if (!panelOpen) {
-          try {
-            await page.evaluate(() => {
-              const el = document.querySelector(".date-picker-container input.d-text");
-              if (el) el.scrollIntoView({ block: "center" });
-            }).catch(() => {});
-            await sleep(300);
-            await page.click(".date-picker-container input.d-text");
-            await sleep(900);
-          } catch {}
-          panelOpen = !!(await findPanelCells());
+        if (readback.trim() !== CONFIG.schedule) {
+          await page.fill(".date-picker-container input.d-text", CONFIG.schedule);
+          await sleep(600);
+          await page.keyboard.press("Enter"); await sleep(1000);
+          readback = await page.evaluate(inputSelValue, ".date-picker-container input.d-text").catch(() => "");
         }
-        if (!panelOpen) {
-          // 重开失败：定时开关关→开让组件满血重挂，再点输入框
-          const off = await page.evaluate(clickScheduleSwitch).catch(() => ({ ok: false }));
-          await sleep(800);
-          const on2 = await page.evaluate(clickScheduleSwitch).catch(() => ({ ok: false }));
-          ev("switch-recycle", { off: off.ok, on: on2.ok });
-          await sleep(1500);
-          try {
-            await page.evaluate(() => {
-              const el = document.querySelector(".date-picker-container input.d-text");
-              if (el) el.scrollIntoView({ block: "center" });
-            }).catch(() => {});
-            await sleep(300);
-            await page.click(".date-picker-container input.d-text");
-            await sleep(900);
-          } catch {}
-          panelOpen = !!(await findPanelCells());
-          if (!panelOpen) {
-            const iconXY = await page.evaluate(() => {
-              const c = document.querySelector(".date-picker-container");
-              if (!c) return null;
-              const r = c.getBoundingClientRect();
-              return { x: Math.round(r.x + 18), y: Math.round(r.y + r.height / 2) };
-            }).catch(() => null);
-            ev("icon-try", iconXY);
-            if (iconXY) { await page.mouse.click(iconXY.x, iconXY.y); await sleep(900); }
-            panelOpen = !!(await findPanelCells());
-          }
-          if (!panelOpen) {
-            await page.evaluate(() => {
-              const el = document.querySelector(".date-picker-container input.d-text");
-              if (el) el.click();
-            }).catch(() => {});
-            await sleep(900);
-            panelOpen = !!(await findPanelCells());
-          }
-        }
-        ev("fill-panel-open", { open: panelOpen });
-        result.fillPanelOpen = panelOpen;
-        if (!panelOpen) {
-          throw Object.assign(new Error("定时面板打不开，无法安全设置时间（已中止，避免变立即发布）"), { step: "schedule-panel" });
-        }
-        await page.fill(".date-picker-container input.d-text", CONFIG.schedule);
-        await sleep(600);
-        await page.keyboard.press("Enter"); await sleep(1000);
-        readback = await page.evaluate(inputSelValue, ".date-picker-container input.d-text").catch(() => "");
-        // Enter 后面板多半自动收起；仍开着就 Esc 关掉，避免提交点击被面板挡住
-        ev("panel-closed", { closed: await closePanelEsc() });
         scheduleInfo = { target: CONFIG.schedule, readback, default: readback0, native: false };
         ev("schedule", scheduleInfo);
         if (readback.trim() !== CONFIG.schedule) {
@@ -698,7 +578,6 @@ async function main() {
     }
     result.schedule = scheduleInfo;
 
-    await dismissDialogs(page, "before-buttons");
     // 8. 底部按钮（closed shadow DOM）
     await page.evaluate(scrollTop);
     await sleep(400);
@@ -726,40 +605,6 @@ async function main() {
       result.ok = true; result.result = "draft-ok";
     } else if (CONFIG.mode === "schedule") {
       if (!submitBtn) throw Object.assign(new Error(`找不到「${submitText}」按钮`), { step: "publish-scheduled" });
-      // 定时安全闸门：native 路径（逐格点选）状态必然提交；fill 路径必须带 fill-panel-open=true 才放行
-      if (CONFIG.schedule && !(scheduleInfo && (scheduleInfo.native || result.fillPanelOpen))) {
-        if (saveBtn) {
-          try { await safeShadowClick(page, saveBtn, "定时未确认-保护性存草稿", false); } catch {}
-        }
-        throw Object.assign(
-          new Error("定时状态未经面板确认，已阻止提交并保护性存入草稿（避免变成立即发布）"),
-          { step: "schedule-uncommitted" });
-      }
-      // 提交前取证：按钮点上压着什么（真实上下文）
-      {
-        const e2 = await page.evaluate((t) => {
-          const out = { vp: { iw: innerWidth, ih: innerHeight, sy: window.scrollY } };
-          const host = document.querySelector("xhs-publish-btn");
-          if (host && t.id) {
-            const r = host.getBoundingClientRect();
-            const cx = r.x + r.width / 2, cy = r.y + r.height / 2;
-            const el = document.elementFromPoint(cx, cy);
-            out.btn = { cx: Math.round(cx), cy: Math.round(cy), hostBox: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) } };
-            out.hit = el === host ? "HOST" : (() => {
-              const rr = el ? el.getBoundingClientRect() : null;
-              return { tag: el ? el.tagName : null, cls: el ? String(el.className).slice(0, 40) : null, txt: el ? (el.innerText || "").trim().replace(/\s+/g, " ").slice(0, 36) : null, box: rr ? [Math.round(rr.x), Math.round(rr.y), Math.round(rr.width), Math.round(rr.height)] : null };
-            })();
-          }
-          const dp = document.querySelector(".date-picker-container");
-          const dpv = dp ? dp.getBoundingClientRect() : null;
-          out.panel = dpv ? { x: Math.round(dpv.x), y: Math.round(dpv.y), w: Math.round(dpv.width), h: Math.round(dpv.height) } : null;
-          const dpl = document.querySelector(".date-picker-container .dp-popup, .date-picker-container [class*=popup], .date-picker-container [class*=panel]:not(.date-picker-container)");
-          const dplr = dpl ? dpl.getBoundingClientRect() : null;
-          out.popup = dplr && dplr.width > 100 ? { x: Math.round(dplr.x), y: Math.round(dplr.y), w: Math.round(dplr.width), h: Math.round(dplr.height) } : null;
-          return out;
-        }, submitBtn).catch(err => ({ err: String(err).slice(0, 120) }));
-        ev("pre-submit-evidence", e2);
-      }
       // 点击「定时发布」（safeShadowClick 内含实时坐标重取，吸底按钮滚动后不再点空）
       await safeShadowClick(page, submitBtn, "定时发布", true);
       await sleep(2500);
@@ -773,9 +618,6 @@ async function main() {
         await stepShot(page, "platform-reject");
         throw Object.assign(new Error(`平台拒绝发布：${errToast}（请修改内容后重试）`), { step: "platform-reject" });
       }
-      await stepShot(page, "08a-post-submit");
-      const postTxt = await page.evaluate(() => (document.body.innerText || "").replace(/\s+/g, " ").slice(0, 400)).catch(() => "");
-      ev("post-submit-text", postTxt.slice(0, 200));
       // 确认弹层可能在 closed shadow 里（text= 看不见），用 AX 树找「确认*」按钮点掉
       for (let attempt = 0; attempt < 2; attempt++) {
         const ax = await page.cdp("Accessibility.getFullAXTree").catch(() => null);
@@ -804,31 +646,14 @@ async function main() {
       // 9. 笔记管理回读验证
       let verify = { found: false };
       try {
-        try {
-          await page.click("text=笔记管理", { timeout: 8000 });
-        } catch {
-          const jsNav = await page.evaluate(() => {
-            for (const a of document.querySelectorAll("a,div,span,li")) {
-              const t = (a.innerText || "").trim();
-              const r = a.getBoundingClientRect();
-              if (t === "笔记管理" && r.width > 0 && r.height > 0) { a.click(); return true; }
-            }
-            return false;
-          }).catch(() => false);
-          ev("verify-nav-js", { ok: jsNav });
-        }
+        await page.click("text=笔记管理", { timeout: 8000 });
         try { await page.waitForLoadState("load", { timeout: 15000 }); } catch {}
         await sleep(3000);
         for (const tab of ["定时发布", "审核中", "全部"]) {
           try {
             await page.click(`text=${tab}`, { timeout: 3000 });
             await sleep(2000);
-            let res = await page.evaluate(findNoteCard, CONFIG.title).catch(() => ({ found: false }));
-            // 定时卡片状态有刷新滞后：先命中但没拿到「定时发布于」时，等 3 秒重读一次
-            if (res.found && CONFIG.schedule && !res.scheduled) {
-              await sleep(3000);
-              res = await page.evaluate(findNoteCard, CONFIG.title).catch(() => res);
-            }
+            const res = await page.evaluate(findNoteCard, CONFIG.title).catch(() => ({ found: false }));
             ev("verify-tab", { tab, res });
             if (res.found) {
               verify = { found: true, tab, matched: res.matched, time: res.time };
