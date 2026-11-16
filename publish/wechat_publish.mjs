@@ -54,6 +54,51 @@ async function insertTextParas(page, text) {
   }
 }
 
+// ---------- 通用弹框清扫（公众号编辑器也可能插运营/公告弹框） ----------
+const findDialogClose = () => {
+  const KEEP = /^(发表|预览|保存为草稿|确定|取消)$/;
+  const clues = [/modal/i, /dialog/i, /popup/i, /drawer/i, /guide/i, /overlay/i, /mask/i];
+  const isDialogish = (el) => {
+    for (let n = el; n !== document.body; n = n.parentElement || document.body) {
+      const cls = String(n.className || "");
+      if (typeof cls === "string" && clues.some((r) => r.test(cls))) return true;
+    }
+    return false;
+  };
+  const SAFE = ["×", "✕", "x", "X", "关闭", "我知道了", "知道了", "暂不", "稍后", "跳过", "不再提示", "不再显示"];
+  const cands = [];
+  document.querySelectorAll("button, a, div, span, i").forEach((el) => {
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0 || r.width > 260 || r.height > 120) return;
+    const t = (el.innerText || el.getAttribute("aria-label") || "").trim();
+    if (!t || t.length > 8 || !SAFE.includes(t)) return;
+    if (!isDialogish(el) || r.y < 60) return;
+    cands.push({ x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), text: t });
+  });
+  let keep = false;
+  document.querySelectorAll("button, a").forEach((el) => {
+    const t = (el.innerText || "").trim();
+    if (KEEP.test(t) && el.getBoundingClientRect().width > 0 && isDialogish(el)) keep = true;
+  });
+  return { keep, close: cands[0] || null, count: cands.length };
+};
+
+async function dismissDialogs(page, tag = "") {
+  let closed = 0;
+  for (let round = 0; round < 3; round++) {
+    const st = await page.evaluate(findDialogClose).catch(() => null);
+    if (!st || st.keep || !st.close) break;
+    try {
+      await page.mouse.click(st.close.x, st.close.y);
+      closed += 1;
+      ev("dialog-dismissed", { tag, text: st.close.text, round });
+      await sleep(800);
+    } catch { break; }
+  }
+  if (closed > 0) await stepShot(page, "dialog-cleared-" + (tag || "x"));
+  return closed;
+}
+
 async function clickMarked(page, text, purpose) {
   const ok = await page.evaluate(markText, text).catch(() => false);
   if (!ok) throw new Error(`找不到「${text}」`);
@@ -102,6 +147,7 @@ async function main() {
     page = task.page(t.label);
     if (!(t.url || "").includes("type=77")) throw new Error("打开的不是贴图编辑器（type=77）");
     ev("editor-open", { tab: t.label });
+    await dismissDialogs(page, "editor-open");
     await stepShot(page, "01-editor");
 
     async function count() {
@@ -257,6 +303,7 @@ async function main() {
     result.images = total;
     await stepShot(page, "03-inserted");
 
+    await dismissDialogs(page, "before-title");
     // 7. 标题 + 描述（focus 方式；描述编辑器高度>100 的 ProseMirror）
     await page.evaluate(() => {
       document.querySelectorAll("[data-wx-title]").forEach((e) => e.removeAttribute("data-wx-title"));
@@ -292,6 +339,7 @@ async function main() {
     await stepShot(page, "04-filled");
 
     // 8. 保存草稿
+    await dismissDialogs(page, "before-save");
     await clickMarked(page, "保存为草稿", "保存草稿");
     await sleep(3500);
     const saved = await page.evaluate(() =>
