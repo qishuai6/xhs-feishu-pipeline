@@ -338,7 +338,19 @@ async function main() {
     await sleep(400);
     await stepShot(page, "04-filled");
 
-    // 8. 保存草稿
+    // 8. 保存草稿（dry-run：填好停在最后一步，0 次提交点击，不产生草稿）
+    if (CONFIG.mode === "dry-run") {
+      await dismissDialogs(page, "before-save");
+      await stepShot(page, "dry-run-final");
+      result.ok = !!(filled.title && total >= Math.min(CONFIG.images.length, 1));
+      result.result = result.ok ? "dry-run-ok" : "dry-run-incomplete";
+      result.filled = filled;
+      result.dry_run = true;
+      ev("dry-run-stop", { title: filled.title, bodyLen: filled.bodyLen });
+      console.log("EGO_RESULT " + JSON.stringify(result));
+      await task.finish({ keep: [] });
+      return;
+    }
     await dismissDialogs(page, "before-save");
     await clickMarked(page, "保存为草稿", "保存草稿");
     await sleep(3500);

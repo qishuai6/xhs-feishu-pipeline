@@ -3,6 +3,10 @@ publish/.profile/
 publish/logs/
 # 生成的图片（随时可重新渲染）
 notes/*/out/
+# 桌面端待发布稿（只保留说明和示例）
+inbox/*
+!inbox/README.md
+!inbox/示例.md
 # Python
 __pycache__/
 *.pyc
