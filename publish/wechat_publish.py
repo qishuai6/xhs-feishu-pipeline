@@ -21,6 +21,7 @@ from pathlib import Path
 PUBLISH_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(PUBLISH_DIR))
 from publish import normalize_title, parse_schedule, resolve_images, validate_schedule_target  # noqa: E402
+from textlen import platform_len, smart_truncate  # noqa: E402
 
 DRIVER = PUBLISH_DIR / "wechat_publish.mjs"
 LOGS_DIR = PUBLISH_DIR / "logs"
@@ -74,12 +75,12 @@ def run_ego(cfg):
 def main():
     ap = argparse.ArgumentParser(description="公众号文章发布（ego lite）")
     ap.add_argument("--images", required=True, help="图片目录 / 逗号分隔 / 通配符")
-    ap.add_argument("--title", required=True, help="标题（≤64 字）")
-    ap.add_argument("--digest", default="", help="摘要（≤120 字，转发卡片展示；不填抓正文开头）")
+    ap.add_argument("--title", required=True, help="标题（平台口径 ≤20 字）")
+    ap.add_argument("--digest", default="", help="贴图描述（≤1000 字；超了按段落/句末智能截断）")
     ap.add_argument("--author", default="署名", help="兼容参数：贴图模式无作者字段，忽略")
     ap.add_argument("--schedule", default=None, help="定时发表 \"YYYY-MM-DD HH:MM\"（5分钟后~7天内）")
     ap.add_argument("--draft", action="store_true", help="只保存草稿（默认）")
-    ap.add_argument("--dry-run", action="store_true", help="填好+保存草稿，不点任何发表按钮")
+    ap.add_argument("--dry-run", action="store_true", help="填好停在最后一步：不保存草稿、不点发表")
     args = ap.parse_args()
 
     images = resolve_images(args.images, str(PUBLISH_DIR))
@@ -93,8 +94,17 @@ def main():
         shutil.copy2(src, dst)
         uniq_images.append(str(dst))
     images = uniq_images
-    title = normalize_title(args.title)[:MAX_TITLE]
-    digest = (args.digest or "")[:MAX_DIGEST]
+    title = normalize_title(args.title)
+    n_title = platform_len(title)
+    if n_title > MAX_TITLE:
+        raise SystemExit("❌ 标题 %d 字（平台口径，上限 %d）：%s\n   压短后再发，脚本不静默截断。"
+                         % (n_title, MAX_TITLE, title))
+
+    raw_digest = (args.digest or "").strip()
+    digest = smart_truncate(raw_digest, MAX_DIGEST)
+    if platform_len(raw_digest) > MAX_DIGEST:
+        print("⚠️  描述超 %d 字，已按段落/句末截到 %d 字；完整正文在小红书端。"
+              % (MAX_DIGEST, platform_len(digest)))
 
     if args.schedule:
         raise SystemExit("❌ 贴图模式当前只支持「填好+存草稿」，不支持自动定时发表。\n"

@@ -142,6 +142,21 @@ strong{font-weight:700}
 
 # ---------------------------------------------------------------- 文本处理
 
+def strip_frontmatter(raw: str) -> str:
+    """去掉文首 YAML frontmatter（--- … ---）。
+
+    单文件模式下 frontmatter 写平台参数（title/body/tags…），由 make.py 读取；
+    这里只负责别把元数据当成正文渲染进卡片。
+    """
+    lines = raw.replace("\r\n", "\n").split("\n")
+    if not lines or lines[0].strip() != "---":
+        return raw
+    for i in range(1, len(lines)):
+        if lines[i].strip() in ("---", "..."):
+            return "\n".join(lines[i + 1:]).lstrip("\n")
+    return raw
+
+
 def md_to_html(text: str) -> str:
     """行内标记转 HTML"""
     s = (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
@@ -525,6 +540,7 @@ def main():
     args = ap.parse_args()
 
     raw = Path(args.input).read_text(encoding="utf-8")
+    raw = strip_frontmatter(raw)
     title, lead, blocks = parse_input(raw)
     blocks = parse_tables(blocks)
     title = args.title or title or "无标题"

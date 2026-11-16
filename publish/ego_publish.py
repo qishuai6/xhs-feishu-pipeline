@@ -27,20 +27,11 @@ from publish import (  # noqa: E402  复用输入解析/校验逻辑
     load_meta, normalize_tags, normalize_title, parse_schedule,
     read_body, resolve_images, validate_schedule_target,
 )
+from textlen import platform_len  # noqa: E402  平台字数口径统一在 textlen.py
 
 DRIVER = PUBLISH_DIR / "ego_publish.mjs"
 LOGS_DIR = PUBLISH_DIR / "logs"
 RUN_TIMEOUT = 15 * 60
-
-
-import re as _re
-
-
-def platform_len(text):
-    """平台字数口径：UTF-16 单元 + 组合 emoji 序号（1️⃣ = 数字+FE0F+20E3，平台多算 2）。"""
-    body = text or ""
-    combos = len(_re.findall(r"[0-9]\uFE0F?\u20E3", body))
-    return len(body) + combos * 2
 
 
 def build_config(args):
