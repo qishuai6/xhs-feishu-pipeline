@@ -99,6 +99,164 @@ async function dismissDialogs(page, tag = "") {
   return closed;
 }
 
+// ---------- 合集 / 小店带货 / 创作来源（2026-11-18 实测，见 SELECTORS.md） ----------
+
+async function clickRowValue(page, rowPrefix, valueText) {
+  // 点侧面板行值区（合集/创作来源 的「未添加」）；点击有延迟，重试 3 次
+  for (let t = 0; t < 3; t++) {
+    const ok = await page.evaluate(({ pfx, val }) => {
+      document.querySelectorAll("[data-wx-row]").forEach((e) => e.removeAttribute("data-wx-row"));
+      const rows = Array.from(document.querySelectorAll("div")).filter((d) => {
+        const x = d.innerText || "";
+        return x.startsWith(pfx) && x.includes(val) && x.length < 20 && d.getBoundingClientRect().width > 100;
+      });
+      if (!rows.length) return false;
+      // 行容器里找值文字的精确最小元素（点击更准）
+      let target = rows[0];
+      const vals = Array.from(rows[0].querySelectorAll("div,span")).filter((e) => (e.innerText || "").trim() === val && e.getBoundingClientRect().width > 0);
+      if (vals.length) {
+        vals.sort((a, b) => a.getBoundingClientRect().width - b.getBoundingClientRect().width);
+        target = vals[0];
+      }
+      target.setAttribute("data-wx-row", "1");
+      return true;
+    }, { pfx: rowPrefix, val: valueText }).catch(() => false);
+    if (!ok) { await sleep(800); continue; }
+    // 实测：要点「值文字」本身（如「未添加」），且常需第二次点击弹层才开
+    for (let clickN = 0; clickN < 2; clickN++) {
+      await page.click('[data-wx-row="1"]').catch(() => {});
+      await sleep(1600);
+      const opened = await page.evaluate((pfx) => {
+        if (pfx === "合集") return !!document.querySelector('input[placeholder="请选择合集"]');
+        if (pfx === "创作来源") return !!(document.body.innerText || "").includes("声明类型");
+        return false;
+      }, rowPrefix).catch(() => false);
+      if (opened) return true;
+    }
+  }
+  return false;
+}
+
+async function setCollection(page, name) {
+  if (!await clickRowValue(page, "合集", "未添加")) { ev("collection-skip", { why: "弹层未开或已设置" }); return false; }
+  await page.click('input[placeholder="请选择合集"]', { timeout: 4000 }).catch(() => {});
+  await sleep(1000);
+  const hit = await page.evaluate((nm) => {
+    document.querySelectorAll("[data-wx-sel]").forEach((e) => e.removeAttribute("data-wx-sel"));
+    const li = Array.from(document.querySelectorAll("li")).find((e) => (e.innerText || "").trim() === nm);
+    if (li) { li.setAttribute("data-wx-sel", "1"); return true; }
+    return false;
+  }, name).catch(() => false);
+  if (!hit) { ev("collection-miss", { name }); await page.keyboard.press("Escape"); return false; }
+  await page.click('[data-wx-sel="1"]');
+  await sleep(600);
+  await page.evaluate(() => {
+    document.querySelectorAll("[data-wx-ok]").forEach((e) => e.removeAttribute("data-wx-ok"));
+    const dlg = Array.from(document.querySelectorAll("div")).find((d) => (d.innerText || "").includes("请选择合集"));
+    const scope = dlg || document;
+    for (const el of scope.querySelectorAll("button")) {
+      if ((el.innerText || "").trim() === "确认" && el.getBoundingClientRect().width > 0) { el.setAttribute("data-wx-ok", "1"); break; }
+    }
+  });
+  const hasOk = await page.evaluate(() => !!document.querySelector('[data-wx-ok="1"]'));
+  if (hasOk) { await page.click('[data-wx-ok="1"]'); await sleep(1200); }
+  const done = await page.evaluate((nm) => {
+    const rows = Array.from(document.querySelectorAll("div")).filter((d) => (d.innerText || "").startsWith("合集") && d.innerText.length < 20 && d.getBoundingClientRect().width > 100);
+    return rows.some((r) => (r.innerText || "").includes(nm));
+  }, name).catch(() => false);
+  ev("collection", { name, ok: done });
+  return done;
+}
+
+async function setShopProduct(page) {
+  const openEntry = await page.evaluate(() => {
+    document.querySelectorAll("[data-wx-link]").forEach((e) => e.removeAttribute("data-wx-link"));
+    const el = Array.from(document.querySelectorAll("div,span")).find((e) => (e.innerText || "").trim() === "支持添加内容链接、小程序、小店商品" && e.getBoundingClientRect().width > 0);
+    if (el) { el.setAttribute("data-wx-link", "1"); return true; }
+    return false;
+  }).catch(() => false);
+  if (!openEntry) { ev("shop-skip", { why: "链接行未找到" }); return false; }
+  await page.click('[data-wx-link="1"]').catch(() => {});
+  await sleep(800);
+  const toShop = await page.evaluate(() => {
+    document.querySelectorAll("[data-wx-shop]").forEach((e) => e.removeAttribute("data-wx-shop"));
+    const cands = Array.from(document.querySelectorAll("div,span,li")).filter((e) => (e.innerText || "").trim() === "小店商品" && e.getBoundingClientRect().width > 0);
+    if (!cands.length) return false;
+    cands[0].setAttribute("data-wx-shop", "1");
+    return true;
+  }).catch(() => false);
+  if (!toShop) { ev("shop-skip", { why: "浮层未弹" }); return false; }
+  await page.click('[data-wx-shop="1"]');
+  await sleep(2500);
+  await page.fill('input[placeholder="输入商品名称、商品短链或店铺名称"]', " ").catch(() => {});
+  await page.keyboard.press("Enter");
+  await sleep(2500);
+  const picked = await page.evaluate(() => {
+    const rows = Array.from(document.querySelectorAll("table tr, [role=row]")).filter((r) => (r.innerText || "").includes("ID:"));
+    if (!rows.length) return null;
+    const idx = Math.floor(Math.random() * rows.length);
+    const label = rows[idx].querySelector("label.weui-desktop-form__check-label") || rows[idx].querySelector("td [class*=check]");
+    if (!label) return null;
+    label.setAttribute("data-wx-prod", "1");
+    return { total: rows.length, idx, name: (rows[idx].innerText || "").replace(/\s+/g, " ").slice(0, 50) };
+  }).catch(() => null);
+  if (!picked) { ev("shop-miss", { why: "商品列表为空" }); await page.keyboard.press("Escape"); return false; }
+  await page.click('[data-wx-prod="1"]');
+  await sleep(900);
+  const selOk = await page.evaluate(() => /已选择\s*1\/1/.test(document.body.innerText || "")).catch(() => false);
+  if (!selOk) { ev("shop-miss", { picked, why: "未勾上" }); return false; }
+  await page.evaluate(() => {
+    document.querySelectorAll("[data-wx-insert]").forEach((e) => e.removeAttribute("data-wx-insert"));
+    for (const el of document.querySelectorAll("button")) {
+      if ((el.innerText || "").trim() === "插入" && el.getBoundingClientRect().width > 0) { el.setAttribute("data-wx-insert", "1"); break; }
+    }
+  });
+  const hasIns = await page.evaluate(() => !!document.querySelector('[data-wx-insert="1"]'));
+  if (!hasIns) { ev("shop-miss", { picked, why: "无插入按钮" }); return false; }
+  await page.click('[data-wx-insert="1"]');
+  await sleep(1800);
+  const done = await page.evaluate(() => {
+    const rows = Array.from(document.querySelectorAll("div")).filter((d) => {
+      const t = d.innerText || "";
+      return t.startsWith("链接") && t.includes("商品：") && d.getBoundingClientRect().width > 150;
+    });
+    return rows.length > 0;
+  }).catch(() => false);
+  ev("shop", { ...picked, ok: done });
+  return done;
+}
+
+async function setCreationSource(page, label) {
+  if (!await clickRowValue(page, "创作来源", "未添加")) { ev("source-skip", { why: "弹层未开或已设置" }); return false; }
+  const hit = await page.evaluate((lb) => {
+    document.querySelectorAll("[data-wx-opt]").forEach((e) => e.removeAttribute("data-wx-opt"));
+    const els = Array.from(document.querySelectorAll("div,span,label,li")).filter((e) => (e.innerText || "").trim() === lb && e.getBoundingClientRect().width > 0);
+    if (!els.length) return 0;
+    els.sort((a, b) => a.getBoundingClientRect().width - b.getBoundingClientRect().width);
+    els[0].setAttribute("data-wx-opt", "1");
+    return els.length;
+  }, label).catch(() => 0);
+  if (!hit) { ev("source-miss", { label }); return false; }
+  await page.click('[data-wx-opt="1"]');
+  await sleep(700);
+  await page.evaluate(() => {
+    document.querySelectorAll("[data-wx-ok]").forEach((e) => e.removeAttribute("data-wx-ok"));
+    const dlg = Array.from(document.querySelectorAll("div")).find((d) => (d.innerText || "").includes("声明类型"));
+    const scope = dlg || document;
+    for (const el of scope.querySelectorAll("button")) {
+      if ((el.innerText || "").trim() === "确认" && el.getBoundingClientRect().width > 0) { el.setAttribute("data-wx-ok", "1"); break; }
+    }
+  });
+  const hasOk = await page.evaluate(() => !!document.querySelector('[data-wx-ok="1"]'));
+  if (hasOk) { await page.click('[data-wx-ok="1"]'); await sleep(1200); }
+  const done = await page.evaluate((lb) => {
+    const rows = Array.from(document.querySelectorAll("div")).filter((d) => (d.innerText || "").startsWith("创作来源") && (d.innerText || "").length < 30 && d.getBoundingClientRect().width > 100);
+    return rows.some((r) => (r.innerText || "").includes(lb.slice(0, 4)));
+  }, label).catch(() => false);
+  ev("creation-source", { label, ok: done });
+  return done;
+}
+
 async function clickMarked(page, text, purpose) {
   const ok = await page.evaluate(markText, text).catch(() => false);
   if (!ok) throw new Error(`找不到「${text}」`);
@@ -340,6 +498,12 @@ async function main() {
 
     // 8. 保存草稿
     await dismissDialogs(page, "before-save");
+    // 7.5 合集 / 小店带货 / 创作来源（全部容错：失败只告警，不阻断存草稿）
+    if (CONFIG.collection) await setCollection(page, CONFIG.collection);
+    if (CONFIG.shop) await setShopProduct(page);
+    if (CONFIG.source_label) await setCreationSource(page, CONFIG.source_label);
+    await dismissDialogs(page, "after-settings");
+    await stepShot(page, "045-settings");
     await clickMarked(page, "保存为草稿", "保存草稿");
     await sleep(3500);
     const saved = await page.evaluate(() =>

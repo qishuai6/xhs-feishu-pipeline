@@ -7,7 +7,7 @@
 
 用法（一般由 make.py --platform wechat 调用）：
     python3 wechat_publish.py --images ../notes/xxx/out --title 标题 \
-        --digest 描述 [--draft "2026-11-06 19:00" | --draft | --dry-run]
+        --digest 摘要 --author 七帅 [--schedule "2026-11-06 19:00" | --draft | --dry-run]
 """
 
 import argparse
@@ -76,10 +76,13 @@ def main():
     ap.add_argument("--images", required=True, help="图片目录 / 逗号分隔 / 通配符")
     ap.add_argument("--title", required=True, help="标题（≤64 字）")
     ap.add_argument("--digest", default="", help="摘要（≤120 字，转发卡片展示；不填抓正文开头）")
-    ap.add_argument("--author", default="署名", help="兼容参数：贴图模式无作者字段，忽略")
+    ap.add_argument("--author", default="七帅", help="兼容参数：贴图模式无作者字段，忽略")
     ap.add_argument("--schedule", default=None, help="定时发表 \"YYYY-MM-DD HH:MM\"（5分钟后~7天内）")
     ap.add_argument("--draft", action="store_true", help="只保存草稿（默认）")
     ap.add_argument("--dry-run", action="store_true", help="填好+保存草稿，不点任何发表按钮")
+    ap.add_argument("--collection", default="财富自由之路", help="加入合集（传空串跳过）")
+    ap.add_argument("--no-shop", action="store_true", help="不挂小店带货商品（默认随机挂一件）")
+    ap.add_argument("--source", default="个人观点，仅供参考", help="创作来源声明（传空串跳过）")
     args = ap.parse_args()
 
     images = resolve_images(args.images, str(PUBLISH_DIR))
@@ -109,6 +112,9 @@ def main():
         "title": title,
         "digest": digest,
         "author": args.author[:8],
+        "collection": args.collection,
+        "shop": not args.no_shop,
+        "source_label": args.source,
         "logs_dir": str(LOGS_DIR),
         "stamp": stamp,
     }
