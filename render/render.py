@@ -465,18 +465,19 @@ def split_title_lines(title):
 
 def cover_html(st, title, lead, kicker, author, css):
     lines = [l for l in title.split("\n") if l.strip()]
-    parts = []
-    for i, l in enumerate(lines):
-        if i == 0:
-            # 主标题：大字号 + 自动均衡折行（一行放不下就折，字号不缩）
-            tl, main = split_title_lines(l)
-            for seg in tl:
-                parts.append(f'<div class="t-main" style="font-size:{main}px;line-height:{MAIN_LINE_H}">'
-                             f'{md_to_html(seg)}</div>')
-        else:
-            fs = max(40, min(54, int(CONTENT_W / max(len(l), 1) * 0.96)))
-            parts.append(f'<div class="t-sub" style="font-size:{fs}px">{md_to_html(l)}</div>')
-    t = "".join(parts)
+    # 所有 # 标题行统一大字渲染（用户要求：标题用大字写全，不要一半大一半小）
+    # 各行独立折行，字号取各行算出的最小值，保证整块视觉统一
+    parts, fss = [], []
+    for l in lines:
+        tl, fs = split_title_lines(l)
+        fss.append(fs)
+        for seg in tl:
+            parts.append((seg, fs))
+    main = min(fss) if fss else 110
+    t = "".join(
+        f'<div class="t-main" style="font-size:{main}px;line-height:{MAIN_LINE_H}">{md_to_html(seg)}</div>'
+        for seg, _ in parts
+    )
     kick = f'<div class="kicker"><i></i>{md_to_html(kicker)}</div>' if kicker else "<div></div>"
     lead_html = f'<div class="lead">{md_to_html(lead)}</div>' if lead else ""
     return f"""<!doctype html><html><head><meta charset="utf-8"><style>{css}</style></head><body>
